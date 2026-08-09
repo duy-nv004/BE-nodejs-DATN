@@ -6,6 +6,8 @@ const Service = require('./Service');
 const Contract = require('./Contract');
 const MeterReading = require('./MeterReading');
 const Invoice = require('./Invoice');
+const SupportRequest = require('./SupportRequest');
+const Plan = require('./Plan');
 
 const setupAssociations = () => {
     // Role - User
@@ -38,6 +40,18 @@ const setupAssociations = () => {
 
     Room.hasMany(Invoice, { foreignKey: 'roomId', as: 'invoices' });
     Invoice.belongsTo(Room, { foreignKey: 'roomId', as: 'roomDetails' });
+
+    // SupportRequest
+    User.hasMany(SupportRequest, { foreignKey: 'tenantId', as: 'supportRequests' });
+    SupportRequest.belongsTo(User, { foreignKey: 'tenantId', as: 'tenant' });
+
+    Room.hasMany(SupportRequest, { foreignKey: 'roomId', as: 'supportRequests' });
+    SupportRequest.belongsTo(Room, { foreignKey: 'roomId', as: 'room' });
+
+    // Notification
+    const Notification = require('./Notification');
+    User.hasMany(Notification, { foreignKey: 'userId', as: 'notifications' });
+    Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 };
 
 module.exports = setupAssociations;

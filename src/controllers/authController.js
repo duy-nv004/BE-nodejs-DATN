@@ -1,101 +1,117 @@
+const authService = require('../services/authService');
+const Plan = require('../models/Plan');
 const User = require('../models/User');
-const Role = require('../models/Role');
-const jwt = require('jsonwebtoken');
-const { Op } = require('sequelize');
 
-const signToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-
-// 1. CHỦ NHÀ tự đăng ký bằng Email
 exports.registerLandlord = async (req, res) => {
     try {
-        const { email, password } = req.body;
-        if (!email || !password) return res.status(400).json({ message: 'Vui lòng nhập Email và Mật khẩu' });
-
-        const role = await Role.findOne({ where: { name: 'landlord' } });
-        const user = await User.create({ email, password, roleId: role.id });
-
-        res.status(201).json({ message: "Đăng ký chủ nhà thành công", token: signToken(user.id) });
+        const result = await authService.registerLandlord(req.body);
+        res.status(201).json(result);
     } catch (err) {
-        res.status(400).json({ message: "Email đã tồn tại trên hệ thống" });
+        res.status(err.statusCode || 500).json({ message: err.message });
     }
 };
 
-// 2. CHỦ NHÀ tạo tài khoản cho NGƯỜI THUÊ bằng SĐT
-exports.createTenant = async (req, res) => {
-    try {
-        const { phone, password } = req.body;
-        if (!phone || !password) return res.status(400).json({ message: 'Vui lòng nhập SĐT và Mật khẩu cho người thuê' });
-
-        const role = await Role.findOne({ where: { name: 'tenant' } });
-        const tenant = await User.create({
-            phone,
-            password,
-            roleId: role.id,
-            ownerId: req.user.id // Ràng buộc người thuê này vào chủ nhà đang đăng nhập
-        });
-
-        res.status(201).json({ message: "Tạo tài khoản người thuê bằng SĐT thành công", tenantId: tenant.id });
-    } catch (err) {
-        res.status(400).json({ message: "Số điện thoại này đã được sử dụng" });
-    }
-};
-
-// 3. ĐĂNG NHẬP CHUNG (Linh hoạt identity là Email hoặc Phone)
-// exports.login = async (req, res) => {
-//     try {
-//         const { identity, password } = req.body; 
-//         const user = await User.findOne({ 
-//             where: {
-//                 [Op.or]: [{ email: identity }, { phone: identity }]
-//             },
-//             include: ['roleData']
-//         });
-
-//         if (user && (await user.comparePassword(password))) {
-//             res.json({
-//                 token: signToken(user.id),
-//                 role: user.roleData.name,
-//                 email: user.email,
-//                 phone: user.phone
-//             });
-//         } else {
-//             res.status(401).json({ message: "Thông tin đăng nhập không chính xác" });
-//         }
-//     } catch (err) {
-//         res.status(500).json({ message: err.message });
-//     }
-// };
 exports.login = async (req, res) => {
     try {
-        const { identity, password } = req.body; 
-        const user = await User.findOne({ 
-            where: {
-                [Op.or]: [{ email: identity }, { phone: identity }]
-            },
-            include: ['roleData']
-        });
+        const result = await authService.loginUser(req.body);
+        res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
 
-        if (user && (await user.comparePassword(password))) {
-            const roleName = user.roleData.name;
-            let telegramConnectLink = null;
+exports.createTenant = async (req, res) => {
+    try {
+        const result = await authService.createTenant(req.user.id, req.body);
+        res.status(201).json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
 
-            // Nếu là Tenant và chưa có Chat ID -> Tạo link điều hướng
-            if (roleName.toLowerCase() === 'tenant' && !user.telegramChatId) {
-                const botUsername = process.env.TELEGRAM_BOT_USERNAME;
-                telegramConnectLink = `https://t.me/${botUsername}?start=${user.id}`;
-            }
+exports.updateProfile = async (req, res) => {
+    try {
+        const result = await authService.updateProfile(req.user.id, req.body);
+        res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
 
-            res.json({
-                token: signToken(user.id),
-                role: roleName,
-                email: user.email,
-                phone: user.phone,
-                telegramConnectLink: telegramConnectLink // Link này dùng cho Frontend
-            });
-        } else {
-            res.status(401).json({ message: "Thông tin đăng nhập không chính xác" });
-        }
+exports.changePassword = async (req, res) => {
+    try {
+        const result = await authService.changePassword(req.user.id, req.body);
+        res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
+
+// Lấy danh sách toàn bộ các gói dịch vụ
+exports.getPlans = async (req, res) => {
+    try {
+        const plans = await Plan.findAll({ order: [['id', 'ASC']] });
+        res.json(plans);
     } catch (err) {
         res.status(500).json({ message: err.message });
+    }
+};
+
+// Đăng ký/nâng cấp gói cước cho chủ nhà
+exports.upgradeRequest = async (req, res) => {
+    try {
+        const { planName } = req.body;
+        if (!planName) {
+            return res.status(400).json({ message: "Vui lòng chọn gói cước muốn nâng cấp" });
+        }
+
+        const plan = await Plan.findOne({ where: { name: planName.toLowerCase() } });
+        if (!plan) {
+            return res.status(404).json({ message: "Gói cước không tồn tại trong hệ thống" });
+        }
+
+        const user = await User.findByPk(req.user.id);
+        user.plan = plan.name;
+        
+        // Thiết lập ngày hết hạn là 30 ngày kể từ hiện tại
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + 30);
+        user.planExpiresAt = expiryDate.toISOString().split('T')[0];
+        
+        await user.save();
+
+        // Tạo thông báo nâng cấp thành công
+        const notificationService = require('../services/notificationService');
+        await notificationService.createNotification(
+            user.id,
+            "Nâng cấp gói dịch vụ thành công",
+            `Chúc mừng bạn đã nâng cấp thành công lên gói ${plan.name.toUpperCase()}. Gói cước có hạn sử dụng đến ngày ${user.planExpiresAt}.`,
+            'plan_expiry',
+            user.id
+        );
+
+        res.json({
+            message: `Chúc mừng! Bạn đã nâng cấp lên gói ${plan.name.toUpperCase()} thành công!`,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                plan: user.plan,
+                planExpiresAt: user.planExpiresAt,
+                role: req.user.roleData?.name || 'landlord'
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+
+exports.getProfile = async (req, res) => {
+    try {
+        const result = await authService.getProfile(req.user.id);
+        res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
     }
 };

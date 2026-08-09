@@ -11,6 +11,7 @@ const User = sequelize.define('User', {
         unique: true,
         validate: { isEmail: true } 
     },
+    name: { type: DataTypes.STRING, allowNull: true },
     phone: { 
         type: DataTypes.STRING, 
         allowNull: true, 
@@ -23,11 +24,15 @@ const User = sequelize.define('User', {
         references: { model: Role, key: 'id' }
     },
     plan: { type: DataTypes.ENUM('free', 'basic', 'pro'), defaultValue: 'free' },
+    planExpiresAt: { type: DataTypes.DATEONLY, allowNull: true },
     ownerId: { type: DataTypes.INTEGER, allowNull: true }, // Lưu ID của Landlord tạo ra Tenant này
     telegramChatId: {
-    type: DataTypes.STRING,
-    allowNull: true,
-}
+        type: DataTypes.STRING,
+        allowNull: true,
+    },
+    cccd: { type: DataTypes.STRING, allowNull: true },
+    dob: { type: DataTypes.STRING, allowNull: true },
+    hometown: { type: DataTypes.TEXT, allowNull: true }
 }, {
     tableName: 'Users',
     hooks: {

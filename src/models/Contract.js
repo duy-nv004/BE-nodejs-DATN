@@ -14,6 +14,25 @@ const Contract = sequelize.define('Contract', {
     waterPrice: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
     internetPrice: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     cleaningPrice: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+
+    // Thông tin Bên A (Chủ nhà)
+    landlordName: { type: DataTypes.STRING, allowNull: true },
+    landlordPhone: { type: DataTypes.STRING, allowNull: true },
+    landlordCccd: { type: DataTypes.STRING, allowNull: true },
+    landlordDob: { type: DataTypes.STRING, allowNull: true },
+    landlordHometown: { type: DataTypes.TEXT, allowNull: true },
+    landlordAddress: { type: DataTypes.TEXT, allowNull: true },
+    
+    // Thông tin Bên B (Người thuê)
+    tenantCccd: { type: DataTypes.STRING, allowNull: true },
+    tenantDob: { type: DataTypes.STRING, allowNull: true },
+    tenantHometown: { type: DataTypes.TEXT, allowNull: true },
+    tenantPhone: { type: DataTypes.STRING, allowNull: true },
+    
+    // Số lượng người ở & ngày thanh toán & đồ dùng bàn giao
+    numTenants: { type: DataTypes.INTEGER, defaultValue: 1 },
+    paymentDay: { type: DataTypes.INTEGER, defaultValue: 30 },
+    inventory: { type: DataTypes.TEXT, allowNull: true }, // Lưu chuỗi JSON của danh sách đồ dùng
     
     status: { type: DataTypes.ENUM('active', 'expired', 'terminated'), defaultValue: 'active' },
     tenantId: { type: DataTypes.INTEGER, references: { model: User, key: 'id' } },

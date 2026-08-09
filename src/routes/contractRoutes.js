@@ -1,10 +1,23 @@
 const express = require('express');
 const router = express.Router();
-const { createContract } = require('../controllers/contractController');
+const { 
+  createContract, 
+  getContracts, 
+  getContractDetail, 
+  terminateContract 
+} = require('../controllers/contractController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const invoiceController = require('../controllers/invoiceController');
 
-router.post('/create', protect, authorize('landlord'), createContract);
-router.post('/invoices/generate', protect, authorize('landlord'), invoiceController.generateInvoice);
+// Tất cả các lệnh dưới đây chỉ dành cho Landlord
+router.use(protect, authorize('landlord'));
+
+router.post('/create', createContract);
+router.get('/', getContracts);
+router.get('/:id', getContractDetail);
+router.put('/:id', terminateContract);
+
+// Thừa hưởng phát sinh hóa đơn cho hợp đồng
+router.post('/invoices/generate', invoiceController.generateInvoice);
 
 module.exports = router;
