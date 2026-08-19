@@ -1,6 +1,7 @@
 const authService = require('../services/authService');
 const Plan = require('../models/Plan');
 const User = require('../models/User');
+const adminService = require('../services/adminService');
 
 exports.registerLandlord = async (req, res) => {
     try {
@@ -60,7 +61,7 @@ exports.getPlans = async (req, res) => {
 // Đăng ký/nâng cấp gói cước cho chủ nhà
 exports.upgradeRequest = async (req, res) => {
     try {
-        const { planName } = req.body;
+        const { planName, billingCycle = 'monthly' } = req.body;
         if (!planName) {
             return res.status(400).json({ message: "Vui lòng chọn gói cước muốn nâng cấp" });
         }
@@ -73,25 +74,37 @@ exports.upgradeRequest = async (req, res) => {
         const user = await User.findByPk(req.user.id);
         user.plan = plan.name;
         
-        // Thiết lập ngày hết hạn là 30 ngày kể từ hiện tại
-        const expiryDate = new Date();
-        expiryDate.setDate(expiryDate.getDate() + 30);
-        user.planExpiresAt = expiryDate.toISOString().split('T')[0];
+        if (plan.name === 'free') {
+            user.planExpiresAt = null;
+        } else {
+            const isAnnual = billingCycle.toLowerCase() === 'annual' || billingCycle.toLowerCase() === 'year';
+            const daysToAdd = isAnnual ? 365 : 30;
+
+            const now = new Date();
+            let baseDate = now;
+            if (user.planExpiresAt && new Date(user.planExpiresAt) > now) {
+                baseDate = new Date(user.planExpiresAt);
+            }
+            baseDate.setDate(baseDate.getDate() + daysToAdd);
+            user.planExpiresAt = baseDate.toISOString().split('T')[0];
+        }
         
         await user.save();
+
+        const cycleText = isAnnual ? '1 Năm' : '1 Tháng';
 
         // Tạo thông báo nâng cấp thành công
         const notificationService = require('../services/notificationService');
         await notificationService.createNotification(
             user.id,
             "Nâng cấp gói dịch vụ thành công",
-            `Chúc mừng bạn đã nâng cấp thành công lên gói ${plan.name.toUpperCase()}. Gói cước có hạn sử dụng đến ngày ${user.planExpiresAt}.`,
+            `Chúc mừng bạn đã nâng cấp thành công gói ${plan.name.toUpperCase()} (${cycleText}). Hạn sử dụng của bạn đến ngày ${user.planExpiresAt}.`,
             'plan_expiry',
             user.id
         );
 
         res.json({
-            message: `Chúc mừng! Bạn đã nâng cấp lên gói ${plan.name.toUpperCase()} thành công!`,
+            message: `Chúc mừng! Bạn đã nâng cấp thành công lên gói ${plan.name.toUpperCase()} (${cycleText})!`,
             user: {
                 id: user.id,
                 name: user.name,
@@ -111,6 +124,19 @@ exports.getProfile = async (req, res) => {
     try {
         const result = await authService.getProfile(req.user.id);
         res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
+
+exports.createAppeal = async (req, res) => {
+    try {
+        const { email, title, message } = req.body;
+        const result = await adminService.createLandlordTicket(email, title, message);
+        res.status(201).json({
+            message: "Đã gửi khiếu nại tài khoản thành công! Ban quản trị sẽ sớm xem xét và phản hồi qua email.",
+            ticket: result
+        });
     } catch (err) {
         res.status(err.statusCode || 500).json({ message: err.message });
     }

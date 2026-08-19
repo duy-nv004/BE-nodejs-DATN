@@ -32,7 +32,8 @@ const User = sequelize.define('User', {
     },
     cccd: { type: DataTypes.STRING, allowNull: true },
     dob: { type: DataTypes.STRING, allowNull: true },
-    hometown: { type: DataTypes.TEXT, allowNull: true }
+    hometown: { type: DataTypes.TEXT, allowNull: true },
+    status: { type: DataTypes.ENUM('active', 'locked'), defaultValue: 'active' }
 }, {
     tableName: 'Users',
     hooks: {

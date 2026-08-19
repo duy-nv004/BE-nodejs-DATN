@@ -52,6 +52,18 @@ const setupAssociations = () => {
     const Notification = require('./Notification');
     User.hasMany(Notification, { foreignKey: 'userId', as: 'notifications' });
     Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+    // AdminLog
+    const AdminLog = require('./AdminLog');
+    User.hasMany(AdminLog, { foreignKey: 'adminId', as: 'adminLogs' });
+    AdminLog.belongsTo(User, { foreignKey: 'adminId', as: 'admin' });
+    User.hasMany(AdminLog, { foreignKey: 'targetUserId', as: 'targetUserLogs' });
+    AdminLog.belongsTo(User, { foreignKey: 'targetUserId', as: 'targetUser' });
+
+    // LandlordTicket
+    const LandlordTicket = require('./LandlordTicket');
+    User.hasMany(LandlordTicket, { foreignKey: 'landlordId', as: 'tickets' });
+    LandlordTicket.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
 };
 
 module.exports = setupAssociations;

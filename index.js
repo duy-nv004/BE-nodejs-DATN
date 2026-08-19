@@ -8,6 +8,8 @@ require("dotenv").config();
 const Role = require("./src/models/Role");
 const User = require("./src/models/User");
 const Plan = require("./src/models/Plan");
+const AdminLog = require("./src/models/AdminLog");
+const LandlordTicket = require("./src/models/LandlordTicket");
 
 // Route imports
 const authRoutes = require("./src/routes/authRoutes");
@@ -19,6 +21,7 @@ const invoiceRoutes = require("./src/routes/invoiceRoutes");
 const adminRoutes = require("./src/routes/adminRoutes");
 const tenantRoutes = require("./src/routes/tenantRoutes");
 const notificationRoutes = require("./src/routes/notificationRoutes");
+const sepayRoutes = require("./src/routes/sepayRoutes");
 
 const cors = require("cors");
 
@@ -41,6 +44,7 @@ app.use("/api/invoices", invoiceRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/tenant", tenantRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/sepay", sepayRoutes);
 
 const PORT = process.env.PORT || 5000;
 
@@ -59,6 +63,13 @@ const startServer = async () => {
     // Thêm cột aiUseCountThisMonth và lastAiUseMonth vào bảng Users nếu chưa có
     const queryInterface = sequelize.getQueryInterface();
     const tableDefinition = await queryInterface.describeTable('Users');
+    if (!tableDefinition.status) {
+        await queryInterface.addColumn('Users', 'status', {
+            type: require('sequelize').DataTypes.STRING,
+            defaultValue: 'active'
+        });
+        console.log("📁 Thêm cột status vào bảng Users thành công!");
+    }
     if (!tableDefinition.aiUseCountThisMonth) {
         await queryInterface.addColumn('Users', 'aiUseCountThisMonth', {
             type: require('sequelize').DataTypes.INTEGER,
@@ -145,6 +156,13 @@ const startServer = async () => {
     }
     console.log("📁 Đồng bộ hóa cấu trúc bảng Contracts thành công!");
 
+    // Đồng bộ thêm cột landlordId cho bảng Invoices
+    const invoicesTableDefinition = await queryInterface.describeTable('Invoices');
+    if (!invoicesTableDefinition.landlordId) {
+        await queryInterface.addColumn('Invoices', 'landlordId', { type: require('sequelize').DataTypes.INTEGER, allowNull: true });
+        console.log("📁 Thêm cột landlordId vào bảng Invoices thành công!");
+    }
+
     // sequelize.sync({ alter: false }).then(() => {
     //   console.log("Database synced");
     // });
@@ -185,10 +203,37 @@ const startServer = async () => {
       ]);
       console.log("✅ Đã khởi tạo các gói dịch vụ: Free, Basic, Pro");
     }
+
+    // Tự động kiểm tra và chuyển tất cả tài khoản hết hạn về Gói Miễn Phí (Free)
+    const autoCheckExpiredPlans = async () => {
+      try {
+        const { Op } = require('sequelize');
+        const today = new Date().toISOString().split('T')[0];
+        const [updatedCount] = await User.update(
+          { plan: 'free', planExpiresAt: null },
+          {
+            where: {
+              plan: { [Op.ne]: 'free' },
+              planExpiresAt: { [Op.lt]: today }
+            }
+          }
+        );
+        if (updatedCount > 0) {
+          console.log(`⏰ [Auto Expiration Task] Đã tự động chuyển ${updatedCount} tài khoản quá hạn về Gói Miễn Phí (Free).`);
+        }
+      } catch (err) {
+        console.error("❌ Lỗi kiểm tra hết hạn gói cước tự động:", err);
+      }
+    };
+
+    await autoCheckExpiredPlans();
+    setInterval(autoCheckExpiredPlans, 3600000); // Tự động quét kiểm tra mỗi 1 giờ
+
     app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
   } catch (error) {
     console.error("❌ Server Error:", error);
   }
 };
 
+// Server started with SePay Integration
 startServer();

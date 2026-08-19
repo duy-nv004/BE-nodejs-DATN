@@ -8,12 +8,14 @@ const {
   changePassword,
   getPlans,
   upgradeRequest,
-  getProfile
+  getProfile,
+  createAppeal
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
 router.post('/register', registerLandlord);
 router.post('/login', login);
+router.post('/appeal', createAppeal);
 router.post('/create-tenant', protect, authorize('landlord'), createTenant);
 
 // Cập nhật thông tin cá nhân & đổi mật khẩu

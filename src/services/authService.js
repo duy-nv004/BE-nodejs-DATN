@@ -45,6 +45,23 @@ exports.loginUser = async ({ identity, password }) => {
         throw createError(401, 'Thông tin đăng nhập không chính xác');
     }
 
+    if (user.status === 'locked') {
+        throw createError(403, 'Tài khoản của bạn đã bị khóa bởi quản trị viên');
+    }
+
+    if (user.plan && user.plan !== 'free' && user.planExpiresAt) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const expDate = new Date(user.planExpiresAt);
+        expDate.setHours(0, 0, 0, 0);
+
+        if (expDate < today) {
+            user.plan = 'free';
+            user.planExpiresAt = null;
+            await user.save();
+        }
+    }
+
     const roleName = user.roleData.name;
     let telegramConnectLink = null;
 
@@ -55,10 +72,13 @@ exports.loginUser = async ({ identity, password }) => {
 
     return {
         token: signToken(user.id),
+        id: user.id,
         role: roleName.toLowerCase(),
         name: user.name,
         email: user.email,
         phone: user.phone,
+        plan: user.plan,
+        planExpiresAt: user.planExpiresAt,
         cccd: user.cccd,
         dob: user.dob,
         hometown: user.hometown,
@@ -131,20 +151,22 @@ exports.updateProfile = async (userId, { name, email, phone, cccd, dob, hometown
     };
 };
 
+/**
+ * Đổi mật khẩu tài khoản người dùng sau khi xác minh mật khẩu hiện tại.
+ * Frontend phải gửi lên trường `currentPassword` (đã đồng bộ với Profile.jsx).
+ * @param {number} userId
+ * @param {{ currentPassword: string, newPassword: string }} params
+ */
 exports.changePassword = async (userId, { currentPassword, newPassword }) => {
     if (!currentPassword || !newPassword) {
         throw createError(400, 'Vui lòng điền mật khẩu hiện tại và mật khẩu mới');
     }
 
     const user = await User.findByPk(userId);
-    if (!user) {
-        throw createError(404, 'Người dùng không tồn tại');
-    }
+    if (!user) throw createError(404, 'Người dùng không tồn tại');
 
     const isMatch = await user.comparePassword(currentPassword);
-    if (!isMatch) {
-        throw createError(401, 'Mật khẩu hiện tại không chính xác');
-    }
+    if (!isMatch) throw createError(401, 'Mật khẩu hiện tại không chính xác');
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
@@ -160,5 +182,19 @@ exports.getProfile = async (userId) => {
     if (!user) {
         throw createError(404, 'Người dùng không tồn tại');
     }
+
+    if (user.plan && user.plan !== 'free' && user.planExpiresAt) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const expDate = new Date(user.planExpiresAt);
+        expDate.setHours(0, 0, 0, 0);
+
+        if (expDate < today) {
+            user.plan = 'free';
+            user.planExpiresAt = null;
+            await user.save();
+        }
+    }
+
     return user;
 };

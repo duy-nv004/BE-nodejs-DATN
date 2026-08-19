@@ -43,6 +43,10 @@ const Invoice = sequelize.define('Invoice', {
     roomId: { 
         type: DataTypes.INTEGER, 
         allowNull: false 
+    },
+    landlordId: {
+        type: DataTypes.INTEGER,
+        allowNull: true
     }
 }, { 
     tableName: 'Invoices',

@@ -20,7 +20,7 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
     const getUsage = async (type) => {
         const readings = await MeterReading.findAll({
             where: { roomId, type },
-            order: [["readingDate", "DESC"]],
+            order: [["id", "DESC"]],
             limit: 2,
         });
         if (readings.length < 2)
@@ -28,7 +28,8 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
 
         const newVal = readings[0].readingValue;
         const oldVal = readings[1].readingValue;
-        return { usage: newVal - oldVal, oldVal, newVal, error: false };
+        const usage = Math.max(0, newVal - oldVal);
+        return { usage, oldVal, newVal, error: false };
     };
 
     const eData = await getUsage("electricity");
@@ -38,23 +39,22 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
         throw createError(400, "Thiếu dữ liệu chỉ số (Cần ít nhất 2 lần chốt số).");
     }
 
-    const room = await Room.findByPk(roomId);
+    const room = await Room.findByPk(roomId, {
+        include: [{ model: Building, as: 'building' }]
+    });
     if (!room) throw createError(404, "Không tìm thấy phòng.");
 
-    const eTotal = eData.usage * contract.electricityPrice;
-    const wTotal = wData.usage * contract.waterPrice;
+    const landlordId = room.building ? room.building.landlordId : null;
+
+    const eTotal = Math.max(0, eData.usage * parseFloat(contract.electricityPrice || 0));
+    const wTotal = Math.max(0, wData.usage * parseFloat(contract.waterPrice || 0));
     const sTotal = parseFloat(contract.internetPrice || 0) + parseFloat(contract.cleaningPrice || 0);
-    const grandTotal = parseFloat(room.price) + eTotal + wTotal + sTotal;
+    const grandTotal = Math.max(0, parseFloat(room.price || 0) + eTotal + wTotal + sTotal);
 
-    const bankId = process.env.BANK_ID || "MB";
-    const accountNo = process.env.BANK_ACCOUNT;
-    const accountName = encodeURIComponent(process.env.BANK_NAME || "");
-    const description = encodeURIComponent(`Thanh toan tien phong ${room.roomNumber} thang ${month}`);
-
-    const qrCodeUrl = `https://img.vietqr.io/image/${bankId}-${accountNo}-compact2.png?amount=${grandTotal}&addInfo=${description}&accountName=${accountName}`;
-
+    // 1. Tạo bản ghi Hóa đơn trước để lấy ID duy nhất
     const invoice = await Invoice.create({
         roomId,
+        landlordId,
         month,
         year,
         roomPrice: room.price,
@@ -62,8 +62,21 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
         waterTotal: wTotal,
         serviceTotal: sTotal,
         totalAmount: grandTotal,
-        qrCodeUrl: qrCodeUrl,
     });
+
+    // 2. Tạo đường link VietQR / SePay chuẩn hóa để SePay tự động gạch nợ
+    // Cú pháp nội dung chuyển khoản: HD <INVOICE_ID> LL <LANDLORD_ID> (Ví dụ: HD 12 LL 5)
+    const bankId = process.env.BANK_ID || "MB";
+    const accountNo = process.env.BANK_ACCOUNT || "0383808466";
+    const accountName = encodeURIComponent(process.env.BANK_NAME || "EXECUTIVE LENS");
+    const sepayContent = `HD ${invoice.id} LL ${landlordId || 0}`;
+    const description = encodeURIComponent(sepayContent);
+
+    // Đường link sinh ảnh SePay VietQR thông minh
+    const qrCodeUrl = `https://qr.sepay.vn/img?bank=${bankId}&acc=${accountNo}&template=compact&amount=${grandTotal}&des=${description}`;
+
+    invoice.qrCodeUrl = qrCodeUrl;
+    await invoice.save();
 
     try {
         const tenant = await User.findOne({ where: { id: contract.tenantId } });
