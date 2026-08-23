@@ -156,11 +156,15 @@ const startServer = async () => {
     }
     console.log("📁 Đồng bộ hóa cấu trúc bảng Contracts thành công!");
 
-    // Đồng bộ thêm cột landlordId cho bảng Invoices
-    const invoicesTableDefinition = await queryInterface.describeTable('Invoices');
-    if (!invoicesTableDefinition.landlordId) {
-        await queryInterface.addColumn('Invoices', 'landlordId', { type: require('sequelize').DataTypes.INTEGER, allowNull: true });
-        console.log("📁 Thêm cột landlordId vào bảng Invoices thành công!");
+    // Đồng bộ thêm cột capacity và area cho bảng Rooms
+    const roomsTableDefinition = await queryInterface.describeTable('Rooms');
+    if (!roomsTableDefinition.capacity) {
+        await queryInterface.addColumn('Rooms', 'capacity', { type: require('sequelize').DataTypes.INTEGER, defaultValue: 2, allowNull: true });
+        console.log("📁 Thêm cột capacity vào bảng Rooms thành công!");
+    }
+    if (!roomsTableDefinition.area) {
+        await queryInterface.addColumn('Rooms', 'area', { type: require('sequelize').DataTypes.DECIMAL(10, 2), defaultValue: 20, allowNull: true });
+        console.log("📁 Thêm cột area vào bảng Rooms thành công!");
     }
 
     // sequelize.sync({ alter: false }).then(() => {

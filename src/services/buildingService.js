@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Contract = require('../models/Contract');
 const Service = require('../models/Service');
 const MeterReading = require('../models/MeterReading');
+const Invoice = require('../models/Invoice');
 const { createError } = require('../utils/errors');
 
 // 1. TẠO TÒA NHÀ
@@ -18,11 +19,17 @@ exports.createBuilding = async (landlordId, { name, address }) => {
 };
 
 // 2. TẠO PHÒNG
-exports.createRoom = async ({ roomNumber, price, buildingId }) => {
+exports.createRoom = async ({ roomNumber, price, capacity, area, buildingId }) => {
     if (!roomNumber || !price || !buildingId) {
         throw createError(400, 'Thiếu thông tin Số phòng, Giá hoặc Tòa nhà');
     }
-    const room = await Room.create({ roomNumber, price, buildingId });
+    const room = await Room.create({
+        roomNumber,
+        price,
+        capacity: capacity ? parseInt(capacity) : 2,
+        area: area ? parseFloat(area) : 20,
+        buildingId
+    });
     return room;
 };
 
@@ -90,6 +97,11 @@ exports.getRooms = async (landlordId) => {
                 ]
             },
             {
+                model: Invoice,
+                as: 'invoices',
+                required: false
+            },
+            {
                 model: MeterReading,
                 as: 'readings',
                 required: false
@@ -101,7 +113,7 @@ exports.getRooms = async (landlordId) => {
 };
 
 // 7. CẬP NHẬT PHÒNG
-exports.updateRoom = async (landlordId, roomId, { roomNumber, price, status }) => {
+exports.updateRoom = async (landlordId, roomId, { roomNumber, price, capacity, area, status }) => {
     const room = await Room.findByPk(roomId, {
         include: [{ model: Building, as: 'building' }]
     });
@@ -110,9 +122,11 @@ exports.updateRoom = async (landlordId, roomId, { roomNumber, price, status }) =
         throw createError(404, 'Phòng trọ không tồn tại hoặc bạn không có quyền chỉnh sửa');
     }
 
-    if (roomNumber) room.roomNumber = roomNumber;
-    if (price) room.price = price;
-    if (status) room.status = status;
+    if (roomNumber !== undefined) room.roomNumber = roomNumber;
+    if (price !== undefined) room.price = price;
+    if (capacity !== undefined) room.capacity = parseInt(capacity);
+    if (area !== undefined) room.area = parseFloat(area);
+    if (status !== undefined) room.status = status;
 
     await room.save();
     return room;

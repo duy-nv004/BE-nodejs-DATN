@@ -169,6 +169,8 @@ exports.updateLandlordPlan = async (id, plan, adminId) => {
         }
         baseDate.setDate(baseDate.getDate() + 30);
         landlord.planExpiresAt = baseDate.toISOString().split('T')[0];
+    } else {
+        landlord.planExpiresAt = null;
     }
 
     await landlord.save();

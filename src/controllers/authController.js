@@ -74,10 +74,12 @@ exports.upgradeRequest = async (req, res) => {
         const user = await User.findByPk(req.user.id);
         user.plan = plan.name;
         
+        const isAnnual = billingCycle.toLowerCase() === 'annual' || billingCycle.toLowerCase() === 'year';
+        const cycleText = isAnnual ? '1 Năm' : '1 Tháng';
+
         if (plan.name === 'free') {
             user.planExpiresAt = null;
         } else {
-            const isAnnual = billingCycle.toLowerCase() === 'annual' || billingCycle.toLowerCase() === 'year';
             const daysToAdd = isAnnual ? 365 : 30;
 
             const now = new Date();
@@ -91,20 +93,30 @@ exports.upgradeRequest = async (req, res) => {
         
         await user.save();
 
-        const cycleText = isAnnual ? '1 Năm' : '1 Tháng';
-
-        // Tạo thông báo nâng cấp thành công
+        // Tạo thông báo nâng cấp / chuyển gói thành công
         const notificationService = require('../services/notificationService');
-        await notificationService.createNotification(
-            user.id,
-            "Nâng cấp gói dịch vụ thành công",
-            `Chúc mừng bạn đã nâng cấp thành công gói ${plan.name.toUpperCase()} (${cycleText}). Hạn sử dụng của bạn đến ngày ${user.planExpiresAt}.`,
-            'plan_expiry',
-            user.id
-        );
+        if (plan.name === 'free') {
+            await notificationService.createNotification(
+                user.id,
+                "Chuyển về gói Miễn Phí",
+                `Tài khoản của bạn đã được chuyển về gói ${plan.name.toUpperCase()} thành công.`,
+                'plan_expiry',
+                user.id
+            );
+        } else {
+            await notificationService.createNotification(
+                user.id,
+                "Nâng cấp gói dịch vụ thành công",
+                `Chúc mừng bạn đã nâng cấp thành công gói ${plan.name.toUpperCase()} (${cycleText}). Hạn sử dụng của bạn đến ngày ${user.planExpiresAt}.`,
+                'plan_expiry',
+                user.id
+            );
+        }
 
         res.json({
-            message: `Chúc mừng! Bạn đã nâng cấp thành công lên gói ${plan.name.toUpperCase()} (${cycleText})!`,
+            message: plan.name === 'free'
+                ? `Đã chuyển về gói ${plan.name.toUpperCase()} thành công!`
+                : `Chúc mừng! Bạn đã nâng cấp thành công lên gói ${plan.name.toUpperCase()} (${cycleText})!`,
             user: {
                 id: user.id,
                 name: user.name,
