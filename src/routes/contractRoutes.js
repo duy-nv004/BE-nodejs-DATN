@@ -4,7 +4,8 @@ const {
   createContract, 
   getContracts, 
   getContractDetail, 
-  terminateContract 
+  terminateContract,
+  cancelContract 
 } = require('../controllers/contractController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const invoiceController = require('../controllers/invoiceController');
@@ -16,6 +17,7 @@ router.post('/create', createContract);
 router.get('/', getContracts);
 router.get('/:id', getContractDetail);
 router.put('/:id', terminateContract);
+router.put('/:id/cancel', cancelContract);
 
 // Thừa hưởng phát sinh hóa đơn cho hợp đồng
 router.post('/invoices/generate', invoiceController.generateInvoice);

@@ -15,6 +15,10 @@ const Contract = sequelize.define('Contract', {
     internetPrice: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     cleaningPrice: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
 
+    // Chỉ số điện nước ban đầu
+    initialElectricity: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+    initialWater: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+
     // Thông tin Bên A (Chủ nhà)
     landlordName: { type: DataTypes.STRING, allowNull: true },
     landlordPhone: { type: DataTypes.STRING, allowNull: true },
@@ -23,18 +27,27 @@ const Contract = sequelize.define('Contract', {
     landlordHometown: { type: DataTypes.TEXT, allowNull: true },
     landlordAddress: { type: DataTypes.TEXT, allowNull: true },
     
+    // Thông tin Chữ ký Bên A
+    landlordSignature: { type: DataTypes.TEXT('long'), allowNull: true },
+    landlordSignedAt: { type: DataTypes.DATE, allowNull: true },
+    
     // Thông tin Bên B (Người thuê)
     tenantCccd: { type: DataTypes.STRING, allowNull: true },
     tenantDob: { type: DataTypes.STRING, allowNull: true },
     tenantHometown: { type: DataTypes.TEXT, allowNull: true },
     tenantPhone: { type: DataTypes.STRING, allowNull: true },
     
+    // Thông tin Chữ ký Bên B
+    tenantSignature: { type: DataTypes.TEXT('long'), allowNull: true },
+    tenantSignedAt: { type: DataTypes.DATE, allowNull: true },
+    rejectionReason: { type: DataTypes.TEXT, allowNull: true },
+    
     // Số lượng người ở & ngày thanh toán & đồ dùng bàn giao
     numTenants: { type: DataTypes.INTEGER, defaultValue: 1 },
     paymentDay: { type: DataTypes.INTEGER, defaultValue: 30 },
     inventory: { type: DataTypes.TEXT, allowNull: true }, // Lưu chuỗi JSON của danh sách đồ dùng
     
-    status: { type: DataTypes.ENUM('active', 'expired', 'terminated'), defaultValue: 'active' },
+    status: { type: DataTypes.STRING, defaultValue: 'pending_tenant_signature' },
     tenantId: { type: DataTypes.INTEGER, references: { model: User, key: 'id' } },
     roomId: { type: DataTypes.INTEGER, references: { model: Room, key: 'id' } }
 }, { tableName: 'Contracts' });

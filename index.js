@@ -154,6 +154,27 @@ const startServer = async () => {
     if (!contractsTableDefinition.inventory) {
         await queryInterface.addColumn('Contracts', 'inventory', { type: require('sequelize').DataTypes.TEXT, allowNull: true });
     }
+    if (!contractsTableDefinition.landlordSignature) {
+        await queryInterface.addColumn('Contracts', 'landlordSignature', { type: require('sequelize').DataTypes.TEXT('long'), allowNull: true });
+    }
+    if (!contractsTableDefinition.landlordSignedAt) {
+        await queryInterface.addColumn('Contracts', 'landlordSignedAt', { type: require('sequelize').DataTypes.DATE, allowNull: true });
+    }
+    if (!contractsTableDefinition.tenantSignature) {
+        await queryInterface.addColumn('Contracts', 'tenantSignature', { type: require('sequelize').DataTypes.TEXT('long'), allowNull: true });
+    }
+    if (!contractsTableDefinition.tenantSignedAt) {
+        await queryInterface.addColumn('Contracts', 'tenantSignedAt', { type: require('sequelize').DataTypes.DATE, allowNull: true });
+    }
+    if (!contractsTableDefinition.rejectionReason) {
+        await queryInterface.addColumn('Contracts', 'rejectionReason', { type: require('sequelize').DataTypes.TEXT, allowNull: true });
+    }
+    if (!contractsTableDefinition.initialElectricity) {
+        await queryInterface.addColumn('Contracts', 'initialElectricity', { type: require('sequelize').DataTypes.DECIMAL(10, 2), defaultValue: 0 });
+    }
+    if (!contractsTableDefinition.initialWater) {
+        await queryInterface.addColumn('Contracts', 'initialWater', { type: require('sequelize').DataTypes.DECIMAL(10, 2), defaultValue: 0 });
+    }
     console.log("📁 Đồng bộ hóa cấu trúc bảng Contracts thành công!");
 
     // Đồng bộ thêm cột capacity và area cho bảng Rooms

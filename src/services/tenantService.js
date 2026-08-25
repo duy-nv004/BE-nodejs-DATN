@@ -7,8 +7,8 @@ const SupportRequest = require('../models/SupportRequest');
 const { createError } = require('../utils/errors');
 
 exports.getDashboardSummary = async (userId) => {
-    // Tìm hợp đồng active của người thuê này
-    const contract = await Contract.findOne({
+    // 1. Tìm hợp đồng active của người thuê này
+    let contract = await Contract.findOne({
         where: { tenantId: userId, status: 'active' },
         include: [
             {
@@ -42,18 +42,53 @@ exports.getDashboardSummary = async (userId) => {
         telegramChatId: user.telegramChatId
     };
 
+    // 2. Nếu không có hợp đồng active, tìm hợp đồng chờ ký (pending_tenant_signature)
+    let hasPendingContract = false;
+    let pendingContractData = null;
+
+    if (!contract) {
+        const pendingContract = await Contract.findOne({
+            where: { tenantId: userId, status: 'pending_tenant_signature' },
+            include: [
+                {
+                    model: Room,
+                    as: 'room',
+                    include: [
+                        {
+                            model: Building,
+                            as: 'building',
+                            include: [
+                                {
+                                    model: User,
+                                    as: 'landlord',
+                                    attributes: ['name', 'phone', 'email']
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
+
+        if (pendingContract) {
+            hasPendingContract = true;
+            contract = pendingContract;
+        }
+    }
+
     if (!contract) {
         return {
             hasActiveContract: false,
+            hasPendingContract: false,
             profile,
             message: "Bạn hiện chưa được gán vào hợp đồng thuê phòng nào."
         };
     }
 
-    const invoices = await Invoice.findAll({
+    const invoices = contract.status === 'active' ? await Invoice.findAll({
         where: { roomId: contract.roomId },
         order: [['year', 'DESC'], ['month', 'DESC']]
-    });
+    }) : [];
 
     const supportRequests = await SupportRequest.findAll({
         where: { tenantId: userId },
@@ -62,7 +97,8 @@ exports.getDashboardSummary = async (userId) => {
     });
 
     return {
-        hasActiveContract: true,
+        hasActiveContract: contract.status === 'active',
+        hasPendingContract: contract.status === 'pending_tenant_signature',
         profile,
         contract: {
             id: contract.id,
@@ -73,6 +109,26 @@ exports.getDashboardSummary = async (userId) => {
             waterPrice: contract.waterPrice,
             internetPrice: contract.internetPrice,
             cleaningPrice: contract.cleaningPrice,
+            initialElectricity: contract.initialElectricity,
+            initialWater: contract.initialWater,
+            landlordName: contract.landlordName,
+            landlordPhone: contract.landlordPhone,
+            landlordCccd: contract.landlordCccd,
+            landlordDob: contract.landlordDob,
+            landlordHometown: contract.landlordHometown,
+            landlordAddress: contract.landlordAddress,
+            landlordSignature: contract.landlordSignature,
+            landlordSignedAt: contract.landlordSignedAt,
+            tenantSignature: contract.tenantSignature,
+            tenantSignedAt: contract.tenantSignedAt,
+            tenantCccd: contract.tenantCccd,
+            tenantDob: contract.tenantDob,
+            tenantHometown: contract.tenantHometown,
+            tenantPhone: contract.tenantPhone,
+            numTenants: contract.numTenants,
+            paymentDay: contract.paymentDay,
+            inventory: contract.inventory,
+            status: contract.status
         },
         room: {
             id: contract.room.id,

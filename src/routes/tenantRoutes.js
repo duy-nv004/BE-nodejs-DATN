@@ -4,7 +4,9 @@ const {
   getDashboardSummary, 
   getInvoices, 
   getSupportRequests, 
-  createSupportRequest 
+  createSupportRequest,
+  signContract,
+  rejectContract
 } = require('../controllers/tenantController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
@@ -16,5 +18,7 @@ router.get('/summary', getDashboardSummary);
 router.get('/invoices', getInvoices);
 router.get('/support', getSupportRequests);
 router.post('/support', createSupportRequest);
+router.post('/contract/:id/sign', signContract);
+router.post('/contract/:id/reject', rejectContract);
 
 module.exports = router;

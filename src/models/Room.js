@@ -11,7 +11,7 @@ const Room = sequelize.define(
     capacity: { type: DataTypes.INTEGER, defaultValue: 2, allowNull: true },
     area: { type: DataTypes.DECIMAL(10, 2), defaultValue: 20, allowNull: true },
     status: {
-      type: DataTypes.ENUM("empty", "occupied", "maintenance"),
+      type: DataTypes.STRING,
       defaultValue: "empty",
     },
     buildingId: {

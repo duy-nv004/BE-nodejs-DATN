@@ -69,14 +69,29 @@ exports.readMeterFromImage = async (file) => {
     }
 };
 
-exports.readCccdFromImage = async (file) => {
-    if (!file) {
+exports.readCccdFromImage = async (filesOrFile) => {
+    let files = [];
+    if (Array.isArray(filesOrFile)) {
+        files = filesOrFile;
+    } else if (filesOrFile) {
+        files = [filesOrFile];
+    }
+
+    if (files.length === 0) {
         throw createError(400, "Vui lòng upload ảnh căn cước công dân");
     }
 
     try {
-        // Chuyển ảnh sang Base64
-        const base64Image = Buffer.from(fs.readFileSync(file.path)).toString("base64");
+        const imageContent = files.map(file => {
+            const base64Image = Buffer.from(fs.readFileSync(file.path)).toString("base64");
+            return {
+                type: "image_url",
+                image_url: {
+                    url: `data:image/jpeg;base64,${base64Image}`,
+                    detail: "high"
+                }
+            };
+        });
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -87,7 +102,8 @@ exports.readCccdFromImage = async (file) => {
                         { 
                             type: "text", 
                             text: `Bạn là một trợ lý AI chuyên nghiệp về trích xuất thông tin từ ảnh thẻ Căn cước công dân (CCCD) Việt Nam.
-                                   Hãy phân tích ảnh thẻ CCCD được cung cấp và trả về thông tin dưới dạng JSON duy nhất.
+                                   Bạn có thể nhận được 1 hoặc 2 ảnh thể hiện mặt trước và/hoặc mặt sau của CCCD.
+                                   Hãy phân tích tất cả các ảnh thẻ CCCD được cung cấp và tổng hợp trả về thông tin dưới dạng JSON duy nhất.
                                    Các trường thông tin cần trích xuất bao gồm:
                                    1. name: Họ và tên (chữ in hoa có dấu, ví dụ: "TẠ ĐÌNH CƯỜNG")
                                    2. dob: Ngày tháng năm sinh (định dạng DD/MM/YYYY, ví dụ: "17/12/2004")
@@ -105,13 +121,7 @@ exports.readCccdFromImage = async (file) => {
                                    }
                                    - Nếu không đọc được trường nào, trả về chuỗi rỗng "".`
                         },
-                        {
-                            type: "image_url",
-                            image_url: {
-                                url: `data:image/jpeg;base64,${base64Image}`,
-                                detail: "high"
-                            },
-                        },
+                        ...imageContent
                     ],
                 },
             ],
@@ -119,7 +129,9 @@ exports.readCccdFromImage = async (file) => {
         });
 
         // Xóa file tạm ngay lập tức
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        files.forEach(file => {
+            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        });
 
         const aiText = response.choices[0].message.content.trim();
         
@@ -136,7 +148,9 @@ exports.readCccdFromImage = async (file) => {
         };
 
     } catch (err) {
-        if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        files.forEach(file => {
+            if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        });
         console.error("OpenAI scanCccd Error:", err);
         throw createError(422, "Không thể nhận diện được thông tin từ ảnh căn cước công dân này. Vui lòng chụp rõ và vuông góc hơn.");
     }

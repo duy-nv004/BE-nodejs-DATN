@@ -7,6 +7,6 @@ const { checkAILimit } = require('../middleware/checkLimit');
 
 // Chỉ cho phép người dùng đã đăng nhập sử dụng AI
 router.post('/read-meter', protect, checkAILimit, upload.single('meterImage'), aiController.readMeter);
-router.post('/scan-cccd', protect, checkAILimit, upload.single('cccdImage'), aiController.scanCccd);
+router.post('/scan-cccd', protect, checkAILimit, upload.any(), aiController.scanCccd);
 
 module.exports = router;

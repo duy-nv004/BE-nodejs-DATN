@@ -39,3 +39,13 @@ exports.terminateContract = async (req, res) => {
         res.status(err.statusCode || 500).json({ message: err.message });
     }
 };
+
+// 5. HỦY HỢP ĐỒNG CHỜ KÝ
+exports.cancelContract = async (req, res) => {
+    try {
+        const result = await contractService.cancelContractByLandlord(req.user.id, req.params.id);
+        res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};

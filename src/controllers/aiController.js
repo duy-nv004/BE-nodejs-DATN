@@ -11,7 +11,8 @@ exports.readMeter = async (req, res) => {
 
 exports.scanCccd = async (req, res) => {
     try {
-        const result = await aiService.readCccdFromImage(req.file);
+        const files = req.files || (req.file ? [req.file] : []);
+        const result = await aiService.readCccdFromImage(files);
         res.status(200).json(result);
     } catch (err) {
         res.status(err.statusCode || 500).json({ message: err.message });
