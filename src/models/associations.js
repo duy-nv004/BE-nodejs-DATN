@@ -64,6 +64,11 @@ const setupAssociations = () => {
     const LandlordTicket = require('./LandlordTicket');
     User.hasMany(LandlordTicket, { foreignKey: 'landlordId', as: 'tickets' });
     LandlordTicket.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
+
+    // PlanUpgradeRequest
+    const PlanUpgradeRequest = require('./PlanUpgradeRequest');
+    User.hasMany(PlanUpgradeRequest, { foreignKey: 'landlordId', as: 'planUpgradeRequests' });
+    PlanUpgradeRequest.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
 };
 
 module.exports = setupAssociations;

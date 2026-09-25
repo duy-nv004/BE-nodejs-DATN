@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Role = require('../models/Role');
+const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
@@ -196,5 +197,22 @@ exports.getProfile = async (userId) => {
         }
     }
 
-    return user;
+    // Yêu cầu nâng cấp đang chờ thanh toán (nếu có) để Frontend hiển thị trạng thái
+    const pendingUpgrade = await PlanUpgradeRequest.findOne({
+        where: { landlordId: user.id, status: 'pending' },
+        order: [['createdAt', 'DESC']]
+    });
+
+    const profile = user.toJSON();
+    profile.pendingUpgrade = pendingUpgrade ? {
+        id: pendingUpgrade.id,
+        planName: pendingUpgrade.planName,
+        billingCycle: pendingUpgrade.billingCycle,
+        amount: parseFloat(pendingUpgrade.amount),
+        transferCode: pendingUpgrade.transferCode,
+        status: pendingUpgrade.status,
+        createdAt: pendingUpgrade.createdAt
+    } : null;
+
+    return profile;
 };

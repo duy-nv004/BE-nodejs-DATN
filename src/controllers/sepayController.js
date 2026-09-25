@@ -11,8 +11,11 @@ exports.handleWebhook = async (req, res) => {
         if (sepayApiKey) {
             const authHeader = req.headers['authorization'] || req.headers['x-sepay-api-key'] || '';
             const token = authHeader.replace(/^(Bearer|Apikey)\s+/i, '').trim();
-            if (token && token !== sepayApiKey) {
-                console.warn(`⚠️ [SePay Webhook] Truy cập không hợp lệ - Sai SEPAY_API_KEY! (Nhận được: "${token}")`);
+            // Bắt buộc phải có token: thiếu header cũng bị từ chối. Trước đây chỉ chặn khi
+            // token SAI, nên request không kèm header vẫn lọt qua và có thể giả mạo webhook
+            // để kích hoạt gói trả phí miễn phí.
+            if (token !== sepayApiKey) {
+                console.warn(`⚠️ [SePay Webhook] Truy cập không hợp lệ - Sai hoặc thiếu SEPAY_API_KEY! (Nhận được: "${token}")`);
                 return res.status(401).json({ success: false, message: 'Xác thực SePay API Key thất bại!' });
             }
         }

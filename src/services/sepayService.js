@@ -4,9 +4,11 @@ const Room = require('../models/Room');
 const Building = require('../models/Building');
 const User = require('../models/User');
 const Plan = require('../models/Plan');
+const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const AdminLog = require('../models/AdminLog');
 const notificationService = require('./notificationService');
 const invoiceService = require('./invoiceService');
+const { isAnnualCycle, cycleDays, planPriceVnd } = require('../utils/planPricing');
 
 /**
  * Xử lý Webhook gửi từ SePay khi có giao dịch ngân hàng mới.
@@ -47,7 +49,6 @@ exports.processWebhookPayload = async (payload) => {
         const landlordId = parseInt(planMatch[1]);
         const planName = planMatch[2].toLowerCase();
         const cycleToken = planMatch[3] ? planMatch[3].toLowerCase() : '';
-        const isAnnual = cycleToken === 'year' || cycleToken === 'annual' || cycleToken === 'nam';
 
         const landlord = await User.findByPk(landlordId);
         if (!landlord) {
@@ -61,9 +62,53 @@ exports.processWebhookPayload = async (payload) => {
             return { success: false, message: `Gói cước ${planName} không hợp lệ` };
         }
 
+        // Yêu cầu nâng cấp đang chờ (nếu chủ nhà bấm nâng cấp trên web trước khi chuyển khoản)
+        const pendingRequest = await PlanUpgradeRequest.findOne({
+            where: { landlordId: landlord.id, planName: plan.name, status: 'pending' },
+            order: [['createdAt', 'DESC']]
+        });
+
+        // Nội dung chuyển khoản không ghi chu kỳ -> lấy theo chu kỳ đã đăng ký trong yêu cầu chờ
+        const isAnnual = cycleToken
+            ? isAnnualCycle(cycleToken)
+            : pendingRequest?.billingCycle === 'annual';
+
+        const expectedAmount = (pendingRequest && !cycleToken)
+            ? parseFloat(pendingRequest.amount)
+            : planPriceVnd(plan, isAnnual ? 'annual' : 'monthly');
+
+        // 🔒 Chốt chặn: KHÔNG kích hoạt gói nếu số tiền nhận được nhỏ hơn giá gói cước.
+        // Nếu thiếu bước này, chỉ cần chuyển vài nghìn đồng kèm nội dung "PLAN <id> PRO"
+        // là chiếm được gói trả phí.
+        if (amount < expectedAmount) {
+            console.warn(`⚠️ [SePay Webhook] Số tiền không đủ cho gói ${plan.name.toUpperCase()} của chủ nhà ID ${landlord.id}: nhận ${amount} / cần ${expectedAmount}`);
+
+            await AdminLog.create({
+                adminId: 1,
+                action: 'PLAN_PAYMENT_REJECTED',
+                targetUserId: landlord.id,
+                description: `[SePay] Từ chối kích hoạt gói ${plan.name.toUpperCase()} cho chủ nhà ${landlord.name || landlord.email} (ID: ${landlord.id}): số tiền nhận được ${amount.toLocaleString('vi-VN')} VNĐ nhỏ hơn giá gói ${expectedAmount.toLocaleString('vi-VN')} VNĐ`
+            });
+
+            await notificationService.createNotification(
+                landlord.id,
+                'Giao dịch chưa đủ để nâng cấp gói dịch vụ',
+                `Hệ thống nhận được ${amount.toLocaleString('vi-VN')} VNĐ cho gói ${plan.name.toUpperCase()} nhưng giá gói là ${expectedAmount.toLocaleString('vi-VN')} VNĐ. `
+                + `Vui lòng chuyển khoản bổ sung phần còn thiếu với đúng nội dung "${pendingRequest?.transferCode || `PLAN ${landlord.id} ${plan.name.toUpperCase()}`}".`,
+                'plan_expiry',
+                landlord.id
+            );
+
+            return {
+                success: false,
+                type: 'PLAN_UNDERPAID',
+                message: `Số tiền ${amount} VNĐ không đủ để kích hoạt gói ${plan.name.toUpperCase()} (cần ${expectedAmount} VNĐ)`
+            };
+        }
+
         // Tự động nâng cấp gói cước cho chủ nhà
         landlord.plan = plan.name;
-        const daysToAdd = isAnnual ? 365 : 30;
+        const daysToAdd = cycleDays(isAnnual ? 'annual' : 'monthly');
         const now = new Date();
         let baseDate = now;
         if (landlord.planExpiresAt && new Date(landlord.planExpiresAt) > now) {
@@ -73,12 +118,22 @@ exports.processWebhookPayload = async (payload) => {
         landlord.planExpiresAt = baseDate.toISOString().split('T')[0];
         await landlord.save();
 
+        // Đánh dấu yêu cầu nâng cấp đã được thanh toán
+        if (pendingRequest) {
+            pendingRequest.status = 'paid';
+            pendingRequest.paidAt = new Date();
+            pendingRequest.transactionReference = String(
+                payload.referenceCode || payload.reference_number || payload.id || ''
+            ) || null;
+            await pendingRequest.save();
+        }
+
         // Ghi nhật ký admin log cho doanh thu SaaS
         await AdminLog.create({
             adminId: 1, // Super Admin hệ thống
             action: 'UPDATE_PLAN',
             targetUserId: landlord.id,
-            description: `[SePay Auto Payment] Chủ nhà ${landlord.name || landlord.email} (ID: ${landlord.id}) đã tự động thanh toán $${amount.toLocaleString('vi-VN')} VND để nâng cấp lên gói ${plan.name.toUpperCase()}`
+            description: `[SePay Auto Payment] Chủ nhà ${landlord.name || landlord.email} (ID: ${landlord.id}) đã tự động thanh toán ${amount.toLocaleString('vi-VN')} VNĐ để nâng cấp lên gói ${plan.name.toUpperCase()}`
         });
 
         // Gửi thông báo cho chủ nhà
