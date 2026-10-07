@@ -19,10 +19,20 @@ exports.createBuilding = async (landlordId, { name, address }) => {
 };
 
 // 2. TẠO PHÒNG
-exports.createRoom = async ({ roomNumber, price, capacity, area, buildingId }) => {
-    if (!roomNumber || !price || !buildingId) {
+exports.createRoom = async (landlordId, { roomNumber, price, capacity, area, buildingId }) => {
+    // Dùng so sánh tường minh thay vì ép kiểu truthy: phòng giá 0 là hợp lệ
+    // (phòng để ở ghép, phòng chưa định giá) nhưng `!price` sẽ chặn nhầm.
+    if (!roomNumber || price === undefined || price === null || !buildingId) {
         throw createError(400, 'Thiếu thông tin Số phòng, Giá hoặc Tòa nhà');
     }
+
+    const building = await Building.findOne({
+        where: { id: buildingId, landlordId }
+    });
+    if (!building) {
+        throw createError(404, 'Tòa nhà không tồn tại hoặc bạn không có quyền truy cập');
+    }
+
     const room = await Room.create({
         roomNumber,
         price,
@@ -126,7 +136,18 @@ exports.updateRoom = async (landlordId, roomId, { roomNumber, price, capacity, a
     if (price !== undefined) room.price = price;
     if (capacity !== undefined) room.capacity = parseInt(capacity);
     if (area !== undefined) room.area = parseFloat(area);
-    if (status !== undefined) room.status = status;
+
+    // Chỉ cho đặt các trạng thái do chủ nhà chủ động quyết định.
+    // 'occupied' và 'reserved' do luồng hợp đồng quản lý — cho sửa tay ở đây sẽ mở
+    // lại đường tạo hai hợp đồng trên cùng một phòng.
+    if (status !== undefined) {
+        const MANUAL_STATUSES = ['empty', 'maintenance'];
+        if (!MANUAL_STATUSES.includes(status)) {
+            throw createError(400, `Chỉ có thể đặt trạng thái phòng thành: ${MANUAL_STATUSES.join(', ')}. `
+                + `Trạng thái "${status}" do hệ thống hợp đồng tự quản lý.`);
+        }
+        room.status = status;
+    }
 
     await room.save();
     return room;
@@ -142,12 +163,14 @@ exports.deleteRoom = async (landlordId, roomId) => {
         throw createError(404, 'Phòng trọ không tồn tại hoặc bạn không có quyền xóa');
     }
 
-    // Kiểm tra xem phòng có hợp đồng đang hoạt động không
-    const activeContracts = await Contract.count({
-        where: { roomId, status: 'active' }
+    // Chặn xóa khi phòng còn hợp đồng CHƯA KẾT THÚC, không chỉ hợp đồng đang active.
+    // Hợp đồng 'pending_tenant_signature' cũng tham chiếu phòng: xóa phòng sẽ làm
+    // Dashboard của khách thuê ném lỗi vì contract.room là null.
+    const blockingContracts = await Contract.count({
+        where: { roomId, status: ['active', 'pending_tenant_signature'] }
     });
-    if (activeContracts > 0) {
-        throw createError(400, 'Không thể xóa phòng trọ đang có hợp đồng hoạt động.');
+    if (blockingContracts > 0) {
+        throw createError(400, 'Không thể xóa phòng trọ đang có hợp đồng hoạt động hoặc đang chờ khách ký.');
     }
 
     await room.destroy();

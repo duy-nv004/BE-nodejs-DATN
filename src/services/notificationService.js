@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Contract = require('../models/Contract');
 const Room = require('../models/Room');
 const Building = require('../models/Building');
+const Role = require('../models/Role');
 const { Op } = require('sequelize');
 
 exports.createNotification = async (userId, title, content, type = 'info', relatedId = null) => {
@@ -87,8 +88,13 @@ exports.checkAndGenerateNotifications = async (userId) => {
         // ----------------------------------------------------
         // B. KIỂM TRA HỢP ĐỒNG SẮP HẾT HẠN (Chủ nhà hoặc Khách thuê)
         // ----------------------------------------------------
+        // So sánh theo TÊN vai trò, không theo roleId cứng. Id 2/3 chỉ đúng khi
+        // bảng Roles được seed đúng thứ tự ở index.js — đổi seed là logic vỡ âm thầm.
+        const role = await Role.findByPk(user.roleId);
+        const roleName = role ? role.name : null;
+
         let contracts = [];
-        if (user.roleId === 2) { // Landlord
+        if (roleName === 'landlord') {
             contracts = await Contract.findAll({
                 where: { status: 'active' },
                 include: [
@@ -110,7 +116,7 @@ exports.checkAndGenerateNotifications = async (userId) => {
                     }
                 ]
             });
-        } else if (user.roleId === 3) { // Tenant
+        } else if (roleName === 'tenant') {
             contracts = await Contract.findAll({
                 where: { tenantId: userId, status: 'active' },
                 include: [
@@ -156,7 +162,7 @@ exports.checkAndGenerateNotifications = async (userId) => {
                         ? `đã quá hạn ${Math.abs(diffDays)} ngày (hết hạn ngày ${contract.endDate})` 
                         : `sẽ hết hạn sau ${diffDays} ngày nữa (ngày ${contract.endDate})`;
 
-                    if (user.roleId === 2) {
+                    if (roleName === 'landlord') {
                         content = `Hợp đồng của khách thuê ${contract.tenant?.name || 'chưa rõ'} tại phòng ${contract.room?.roomNumber} ${suffix}. Vui lòng liên hệ khách thuê để gia hạn hoặc chuẩn bị bàn giao.`;
                     } else {
                         content = `Hợp đồng thuê phòng ${contract.room?.roomNumber} của bạn ${suffix}. Vui lòng liên hệ chủ nhà để thực hiện gia hạn hợp đồng.`;

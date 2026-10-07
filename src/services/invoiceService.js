@@ -9,7 +9,16 @@ const axios = require('axios');
 const { createError } = require('../utils/errors');
 
 // 1. XUẤT HÓA ĐƠN
-exports.generateInvoice = async ({ roomId, month, year }) => {
+exports.generateInvoice = async ({ roomId, month, year }, reqLandlordId = null) => {
+    const room = await Room.findByPk(roomId, {
+        include: [{ model: Building, as: 'building' }]
+    });
+    if (!room || (reqLandlordId && room.building?.landlordId !== reqLandlordId)) {
+        throw createError(404, "Phòng không tồn tại hoặc bạn không có quyền tạo hóa đơn cho phòng này.");
+    }
+
+    const landlordId = room.building ? room.building.landlordId : null;
+
     const contract = await Contract.findOne({
         where: { roomId, status: "active" },
     });
@@ -17,17 +26,35 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
         throw createError(404, "Phòng này chưa có hợp đồng đang hoạt động.");
     }
 
-    const getUsage = async (type) => {
-        const readings = await MeterReading.findAll({
-            where: { roomId, type },
-            order: [["id", "DESC"]],
-            limit: 2,
-        });
-        if (readings.length < 2)
-            return { usage: 0, oldVal: 0, newVal: 0, error: true };
+    // Mỗi phòng chỉ được có một hóa đơn cho mỗi kỳ. Chặn sớm ở đây để trả về thông
+    // báo rõ ràng; unique index ở tầng DB là chốt chặn cuối cho trường hợp đua nhau.
+    const existingInvoice = await Invoice.findOne({ where: { roomId, month, year } });
+    if (existingInvoice) {
+        throw createError(409, `Phòng ${room.roomNumber} đã có hóa đơn tháng ${month}/${year}. `
+            + `Vui lòng xóa hóa đơn cũ nếu muốn xuất lại.`);
+    }
 
-        const newVal = readings[0].readingValue;
-        const oldVal = readings[1].readingValue;
+    // Chỉ số phải thuộc ĐÚNG kỳ của hóa đơn. Trước đây lấy 2 bản ghi mới nhất bất kể
+    // ngày, nên xuất hóa đơn cho tháng đã chốt số từ trước sẽ tính ra số tiêu thụ sai.
+    const period = `${year}-${String(month).padStart(2, '0')}`;
+
+    // Tiêu thụ của kỳ = chỉ số chốt cuối kỳ này - chỉ số chốt cuối kỳ liền trước.
+    // Mỗi kỳ chỉ có đúng 1 bản ghi (ràng buộc unique ở model MeterReading), nên
+    // "số cũ" phải là bản ghi gần nhất có kỳ NHỎ HƠN kỳ đang xuất hóa đơn.
+    const getUsage = async (type) => {
+        const { Op } = require('sequelize');
+
+        const current = await MeterReading.findOne({ where: { roomId, type, period } });
+        if (!current) return { usage: 0, oldVal: 0, newVal: 0, error: true };
+
+        const previous = await MeterReading.findOne({
+            where: { roomId, type, period: { [Op.lt]: period, [Op.ne]: null } },
+            order: [["period", "DESC"]],
+        });
+
+        // Kỳ đầu tiên của hợp đồng: chỉ số ban đầu do chủ nhà nhập lúc tạo hợp đồng
+        const oldVal = previous ? previous.readingValue : 0;
+        const newVal = current.readingValue;
         const usage = Math.max(0, newVal - oldVal);
         return { usage, oldVal, newVal, error: false };
     };
@@ -36,25 +63,22 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
     const wData = await getUsage("water");
 
     if (eData.error || wData.error) {
-        throw createError(400, "Thiếu dữ liệu chỉ số (Cần ít nhất 2 lần chốt số).");
+        throw createError(400, `Chưa chốt đủ chỉ số cho kỳ ${month}/${year}. `
+            + `Vui lòng nhập chỉ số điện và nước của kỳ này trước khi xuất hóa đơn.`);
     }
-
-    const room = await Room.findByPk(roomId, {
-        include: [{ model: Building, as: 'building' }]
-    });
-    if (!room) throw createError(404, "Không tìm thấy phòng.");
-
-    const landlordId = room.building ? room.building.landlordId : null;
 
     const eTotal = Math.max(0, eData.usage * parseFloat(contract.electricityPrice || 0));
     const wTotal = Math.max(0, wData.usage * parseFloat(contract.waterPrice || 0));
     const sTotal = parseFloat(contract.internetPrice || 0) + parseFloat(contract.cleaningPrice || 0);
     const grandTotal = Math.max(0, parseFloat(room.price || 0) + eTotal + wTotal + sTotal);
 
-    // 1. Tạo bản ghi Hóa đơn trước để lấy ID duy nhất
+    // Gắn hóa đơn với đúng người thuê / hợp đồng của kỳ này. Không có 2 trường này
+    // thì khách thuê mới vào phòng sẽ nhìn thấy công nợ của khách thuê trước.
     const invoice = await Invoice.create({
         roomId,
         landlordId,
+        tenantId: contract.tenantId,
+        contractId: contract.id,
         month,
         year,
         roomPrice: room.price,
@@ -64,7 +88,7 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
         totalAmount: grandTotal,
     });
 
-    // 2. Tạo đường link VietQR / SePay chuẩn hóa để SePay tự động gạch nợ
+    // Tạo đường link VietQR / SePay chuẩn hóa để SePay tự động gạch nợ
     // Cú pháp nội dung chuyển khoản: HD <INVOICE_ID> LL <LANDLORD_ID> (Ví dụ: HD 12 LL 5)
     const bankId = process.env.BANK_ID || "MB";
     const accountNo = process.env.BANK_ACCOUNT || "0383808466";
@@ -80,7 +104,10 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
 
     try {
         const tenant = await User.findOne({ where: { id: contract.tenantId } });
-        const targetChatId = tenant?.telegramChatId || process.env.TELEGRAM_CHAT_ID;
+        // Chỉ gửi tới chat riêng của người thuê. KHÔNG fallback về TELEGRAM_CHAT_ID
+        // của hệ thống: làm vậy sẽ đẩy hóa đơn kèm số phòng và số tiền vào nhóm chat
+        // chung khi người thuê chưa liên kết Telegram.
+        const targetChatId = tenant?.telegramChatId;
 
         if (targetChatId) {
             await telegramService.sendInvoiceToTelegram(targetChatId, {
@@ -94,6 +121,8 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
                 serviceTotal: sTotal,
                 qrCodeUrl: qrCodeUrl,
             });
+        } else {
+            console.log(`ℹ️ [Invoice] Người thuê ID ${contract.tenantId} chưa liên kết Telegram — bỏ qua gửi hóa đơn.`);
         }
     } catch (teleErr) {
         console.error("⚠️ Lỗi gửi Telegram:", teleErr.message);
@@ -111,14 +140,28 @@ exports.generateInvoice = async ({ roomId, month, year }) => {
 };
 
 // 2. XÁC NHẬN THANH TOÁN
-exports.updatePaymentStatus = async (invoiceId, { isPaid }) => {
+exports.updatePaymentStatus = async (invoiceId, { isPaid }, landlordId = null) => {
     const invoice = await Invoice.findByPk(invoiceId, {
-        include: [{ model: Room, as: "roomDetails" }],
+        include: [
+            {
+                model: Room,
+                as: "roomDetails",
+                include: [{ model: Building, as: "building" }]
+            }
+        ],
     });
 
     if (!invoice) throw createError(404, "Không tìm thấy hóa đơn");
 
+    const ownerLandlordId = invoice.landlordId || invoice.roomDetails?.building?.landlordId;
+    if (landlordId && ownerLandlordId !== landlordId) {
+        throw createError(404, "Hóa đơn không tồn tại hoặc bạn không có quyền cập nhật");
+    }
+
     invoice.isPaid = isPaid;
+    if (!invoice.landlordId && ownerLandlordId) {
+        invoice.landlordId = ownerLandlordId;
+    }
     await invoice.save();
 
     if (isPaid === true) {

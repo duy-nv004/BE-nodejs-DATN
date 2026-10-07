@@ -3,6 +3,7 @@ const Room = require('../models/Room');
 const Building = require('../models/Building');
 const User = require('../models/User');
 const MeterReading = require('../models/MeterReading');
+const sequelize = require('../config/db');
 const { createError } = require('../utils/errors');
 
 // 1. TẠO HỢP ĐỒNG (Chủ nhà khởi tạo & ký số)
@@ -17,7 +18,10 @@ exports.createContract = async (landlordId, data) => {
         numTenants, paymentDay, inventory
     } = data;
 
-    if (!tenantId || !roomId || !startDate || !endDate || !electricityPrice || !waterPrice) {
+    // Đơn giá 0 là hợp lệ (chủ nhà tặng kèm điện/nước) nên phải so sánh tường minh,
+    // dùng `!electricityPrice` sẽ chặn nhầm và báo sai là "thiếu thông tin".
+    const missingPrice = [electricityPrice, waterPrice].some(v => v === undefined || v === null || v === '');
+    if (!tenantId || !roomId || !startDate || !endDate || missingPrice) {
         throw createError(400, 'Vui lòng cung cấp đầy đủ thông tin hợp đồng');
     }
 
@@ -38,8 +42,13 @@ exports.createContract = async (landlordId, data) => {
         throw createError(404, 'Phòng trọ không tồn tại hoặc bạn không có quyền gán hợp đồng');
     }
 
-    if (room.status === 'occupied') {
-        throw createError(400, 'Phòng này đang có khách thuê, vui lòng thanh lý hợp đồng cũ trước.');
+    // Chỉ cho tạo hợp đồng trên phòng thực sự trống. Trước đây chỉ chặn 'occupied',
+    // nên phòng đang 'reserved' (đã có hợp đồng chờ ký) vẫn tạo được hợp đồng thứ hai
+    // cho cùng một phòng -> hai hợp đồng cùng active, mọi truy vấn tìm hợp đồng
+    // đang hoạt động theo roomId sau đó sẽ lấy bừa một cái.
+    if (room.status !== 'empty') {
+        throw createError(400, `Phòng ${room.roomNumber} hiện không ở trạng thái trống `
+            + `(đang là "${room.status}"). Vui lòng kiểm tra hợp đồng hiện có trước khi tạo mới.`);
     }
 
     // Kiểm tra xem khách thuê này đã có hợp đồng nào đang hoạt động hoặc đang chờ ký không
@@ -58,40 +67,46 @@ exports.createContract = async (landlordId, data) => {
         }
     }
 
-    // Tạo hợp đồng ở trạng thái CHỜ KHÁCH KÝ
-    const contract = await Contract.create({
-        tenantId,
-        roomId,
-        startDate,
-        endDate,
-        deposit: deposit || 0,
-        electricityPrice,
-        waterPrice,
-        internetPrice: internetPrice || 0,
-        cleaningPrice: cleaningPrice || 0,
-        initialElectricity: initialElectricity || 0,
-        initialWater: initialWater || 0,
-        landlordName,
-        landlordPhone,
-        landlordCccd,
-        landlordDob,
-        landlordHometown,
-        landlordAddress,
-        landlordSignature,
-        landlordSignedAt: new Date(),
-        tenantCccd,
-        tenantDob,
-        tenantHometown,
-        tenantPhone,
-        numTenants: numTenants || 1,
-        paymentDay: paymentDay || 30,
-        inventory: inventory ? (typeof inventory === 'string' ? inventory : JSON.stringify(inventory)) : null,
-        status: 'pending_tenant_signature'
-    });
+    // Tạo hợp đồng ở trạng thái CHỜ KHÁCH KÝ.
+    // Bọc trong transaction: nếu bước giữ chỗ phòng thất bại thì hợp đồng cũng
+    // không được tạo, tránh để lại hợp đồng mồ côi không giữ phòng nào.
+    const contract = await sequelize.transaction(async (t) => {
+        const created = await Contract.create({
+            tenantId,
+            roomId,
+            startDate,
+            endDate,
+            deposit: deposit || 0,
+            electricityPrice,
+            waterPrice,
+            internetPrice: internetPrice || 0,
+            cleaningPrice: cleaningPrice || 0,
+            initialElectricity: initialElectricity || 0,
+            initialWater: initialWater || 0,
+            landlordName,
+            landlordPhone,
+            landlordCccd,
+            landlordDob,
+            landlordHometown,
+            landlordAddress,
+            landlordSignature,
+            landlordSignedAt: new Date(),
+            tenantCccd,
+            tenantDob,
+            tenantHometown,
+            tenantPhone,
+            numTenants: numTenants || 1,
+            paymentDay: paymentDay || 30,
+            inventory: inventory ? (typeof inventory === 'string' ? inventory : JSON.stringify(inventory)) : null,
+            status: 'pending_tenant_signature'
+        }, { transaction: t });
 
-    // Giữ chỗ cho phòng trọ (reserved)
-    room.status = 'reserved';
-    await room.save();
+        // Giữ chỗ cho phòng trọ (reserved)
+        room.status = 'reserved';
+        await room.save({ transaction: t });
+
+        return created;
+    });
 
     return contract;
 };
@@ -111,34 +126,45 @@ exports.signContractByTenant = async (tenantId, contractId, tenantSignature) => 
         throw createError(404, 'Không tìm thấy hợp đồng chờ ký phù hợp.');
     }
 
-    contract.tenantSignature = tenantSignature;
-    contract.tenantSignedAt = new Date();
-    contract.status = 'active';
-    await contract.save();
+    // Kỳ của chỉ số đầu kỳ = tháng bắt đầu hợp đồng
+    const startPeriod = String(contract.startDate).slice(0, 7);
 
-    // Tạo chỉ số điện nước bắt đầu (isInitial: true)
-    await MeterReading.bulkCreate([
-        {
-            roomId: contract.roomId,
-            type: 'electricity',
-            readingValue: contract.initialElectricity || 0,
-            isInitial: true,
-            readingDate: contract.startDate
-        },
-        {
-            roomId: contract.roomId,
-            type: 'water',
-            readingValue: contract.initialWater || 0,
-            isInitial: true,
-            readingDate: contract.startDate
+    // Ba thay đổi (hợp đồng + chỉ số đầu kỳ + trạng thái phòng) phải cùng thành công
+    // hoặc cùng thất bại. Nếu chỉ số đầu kỳ ghi lỗi mà hợp đồng đã active thì phòng
+    // không bao giờ xuất được hóa đơn (generateInvoice báo thiếu chỉ số).
+    await sequelize.transaction(async (t) => {
+        contract.tenantSignature = tenantSignature;
+        contract.tenantSignedAt = new Date();
+        contract.status = 'active';
+        await contract.save({ transaction: t });
+
+        // Chỉ số điện nước bắt đầu (isInitial: true), gắn luôn kỳ để lần xuất hóa
+        // đơn đầu tiên tính được số tiêu thụ so với mốc bàn giao.
+        await MeterReading.bulkCreate([
+            {
+                roomId: contract.roomId,
+                type: 'electricity',
+                readingValue: contract.initialElectricity || 0,
+                isInitial: true,
+                period: startPeriod,
+                readingDate: contract.startDate
+            },
+            {
+                roomId: contract.roomId,
+                type: 'water',
+                readingValue: contract.initialWater || 0,
+                isInitial: true,
+                period: startPeriod,
+                readingDate: contract.startDate
+            }
+        ], { transaction: t });
+
+        // Cập nhật trạng thái phòng thành occupied
+        if (contract.room) {
+            contract.room.status = 'occupied';
+            await contract.room.save({ transaction: t });
         }
-    ]);
-
-    // Cập nhật trạng thái phòng thành occupied
-    if (contract.room) {
-        contract.room.status = 'occupied';
-        await contract.room.save();
-    }
+    });
 
     return contract;
 };

@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const { Op } = require("sequelize");
 const User = require("../models/User");
 const Role = require("../models/Role");
 const Contract = require("../models/Contract");
@@ -9,9 +10,31 @@ const Invoice = require("../models/Invoice");
 const SupportRequest = require("../models/SupportRequest");
 const axios = require("axios");
 
+if (!process.env.TELEGRAM_WEBHOOK_SECRET) {
+  console.warn('⚠️  [telegramRoutes] TELEGRAM_WEBHOOK_SECRET chưa được cấu hình — webhook Telegram đang mở công khai.');
+}
+
 // Lưu trữ session tạm thời cho việc báo hỏng
-// Key: chatId (string), Value: { userId, roomId, step: 'WAITING_FOR_ISSUE_DESC' }
+// Key: chatId (string), Value: { userId, roomId, step, expiresAt }
 const activeSessions = new Map();
+
+// Session tự hết hạn sau 10 phút: nếu không, một session bỏ dở sẽ nuốt mọi
+// tin nhắn text người dùng gửi sau đó và biến chúng thành nội dung báo hỏng.
+const SESSION_TTL_MS = 10 * 60 * 1000;
+
+const setSession = (chatId, data) => {
+  activeSessions.set(chatId, { ...data, expiresAt: Date.now() + SESSION_TTL_MS });
+};
+
+const getSession = (chatId) => {
+  const session = activeSessions.get(chatId);
+  if (!session) return null;
+  if (session.expiresAt < Date.now()) {
+    activeSessions.delete(chatId);
+    return null;
+  }
+  return session;
+};
 
 // Helper gửi tin nhắn
 const sendTelegramMessage = async (chatId, text, replyMarkup = null) => {
@@ -83,6 +106,15 @@ const getMenuMarkup = (roleName) => {
 };
 
 router.post("/webhook", async (req, res) => {
+  // Xác thực nguồn gọi: Telegram gửi kèm header này khi setWebhook có secret_token.
+  // Thiếu bước này, bất kỳ ai cũng POST được payload giả để gán chat Telegram của
+  // họ vào tài khoản người khác, hoặc đổi trạng thái sự cố của chủ nhà khác.
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (webhookSecret && req.headers['x-telegram-bot-api-secret-token'] !== webhookSecret) {
+    console.warn('⚠️ [Telegram Webhook] Truy cập không hợp lệ - sai hoặc thiếu secret token!');
+    return res.status(401).send('Unauthorized');
+  }
+
   try {
     const { message, callback_query } = req.body;
 
@@ -226,8 +258,8 @@ router.post("/webhook", async (req, res) => {
             return res.status(200).send("OK");
           }
 
-          // Thiết lập session trạng thái chờ nhập mô tả
-          activeSessions.set(chatId.toString(), {
+          // Thiết lập session trạng thái chờ nhập mô tả (tự hết hạn sau 10 phút)
+          setSession(chatId.toString(), {
             userId: user.id,
             roomId: contract.roomId,
             step: 'WAITING_FOR_ISSUE_DESC'
@@ -325,6 +357,13 @@ router.post("/webhook", async (req, res) => {
 
       // --- CHỦ NHÀ ĐỔI TRẠNG THÁI SỰ CỐ ---
       if (callbackData.startsWith("landlord_status_")) {
+        // Khối này nằm ngoài nhánh roleName === "landlord" nên phải tự kiểm tra vai trò,
+        // nếu không khách thuê cũng bấm được callback_data này.
+        if (roleName !== "landlord") {
+          await sendTelegramMessage(chatId, "⚠️ Bạn không có quyền cập nhật trạng thái sự cố.");
+          return res.status(200).send("OK");
+        }
+
         const parts = callbackData.split("_");
         const statusType = parts[2]; // repairing | resolved
         const requestId = parts[3];
@@ -336,12 +375,15 @@ router.post("/webhook", async (req, res) => {
           ]
         });
 
-        if (!request) {
-          await sendTelegramMessage(chatId, "❌ Sự cố này không tồn tại hoặc đã bị xóa khỏi hệ thống.");
+        // Chỉ chủ nhà sở hữu phòng xảy ra sự cố mới được đổi trạng thái.
+        // Trước đây chỉ kiểm tra tồn tại, nên bất kỳ ai đã liên kết Telegram
+        // cũng đổi được trạng thái sự cố của phòng thuộc chủ nhà khác.
+        if (!request || request.room?.building?.landlordId !== user.id) {
+          await sendTelegramMessage(chatId, "❌ Sự cố này không tồn tại hoặc không thuộc quyền quản lý của bạn.");
           return res.status(200).send("OK");
         }
 
-        let dbStatus = 'pending';
+        let dbStatus = null;
         let statusText = '';
         if (statusType === 'repairing') {
           dbStatus = 'in_progress';
@@ -349,6 +391,11 @@ router.post("/webhook", async (req, res) => {
         } else if (statusType === 'resolved') {
           dbStatus = 'resolved';
           statusText = '✅ Đã hoàn thành';
+        }
+
+        if (!dbStatus) {
+          await sendTelegramMessage(chatId, "⚠️ Trạng thái không hợp lệ.");
+          return res.status(200).send("OK");
         }
 
         await request.update({ status: dbStatus });
@@ -372,19 +419,30 @@ router.post("/webhook", async (req, res) => {
 
       // --- HÀNH ĐỘNG KẾT NỐI MỚI /START ---
       if (text.startsWith("/start")) {
-        const userId = text.split(" ")[1];
+        const linkToken = text.split(" ")[1];
 
-        if (userId) {
-          const user = await User.findByPk(userId, {
+        if (linkToken) {
+          // Tra theo token ngắn hạn (15 phút, dùng một lần) thay vì user.id.
+          // Trước đây tham số là user.id nên ai đoán được id cũng gán được chat
+          // Telegram của mình vào tài khoản đó. Token sinh ở authService.generateTelegramLink.
+          const user = await User.findOne({
+            where: {
+              telegramLinkToken: linkToken,
+              telegramLinkTokenExpiresAt: { [Op.gt]: new Date() }
+            },
             include: { model: Role, as: 'roleData' }
           });
 
           if (user) {
-            await user.update({ telegramChatId: chatId.toString() });
+            user.telegramChatId = chatId.toString();
+            // Token dùng một lần: xoá ngay để không thể liên kết lại lần nữa
+            user.telegramLinkToken = null;
+            user.telegramLinkTokenExpiresAt = null;
+            await user.save();
 
             let responseText = "✅ Kết nối thành công! Bạn đã liên kết với hệ thống quản lý phòng trọ.";
             const roleName = user.roleData ? user.roleData.name : null;
-            
+
             if (roleName === "landlord") {
               responseText = "✅ Kết nối thành công! Bạn đã liên kết tài khoản Chủ nhà thành công. Bạn sẽ nhận được các thông báo báo hỏng và báo cáo quản lý tại đây.";
             } else if (roleName === "tenant") {
@@ -394,7 +452,7 @@ router.post("/webhook", async (req, res) => {
             const menuMarkup = getMenuMarkup(roleName);
             await sendTelegramMessage(chatId, responseText, menuMarkup);
           } else {
-            await sendTelegramMessage(chatId, "❌ Người dùng không tồn tại. Vui lòng kết nối lại từ website.");
+            await sendTelegramMessage(chatId, "❌ Liên kết không hợp lệ hoặc đã hết hạn. Vui lòng vào website và bấm 'Kết nối Telegram' để lấy liên kết mới.");
           }
         } else {
           // Lệnh /start thông thường không tham số
@@ -432,9 +490,8 @@ router.post("/webhook", async (req, res) => {
       }
 
       // --- XỬ LÝ NHẬP MÔ TẢ CHO TIẾN TRÌNH BÁO HỎNG ---
-      if (activeSessions.has(chatId.toString())) {
-        const session = activeSessions.get(chatId.toString());
-
+      const session = getSession(chatId.toString());
+      if (session) {
         if (session.step === 'WAITING_FOR_ISSUE_DESC') {
           // Tạo yêu cầu báo hỏng trong database
           const newRequest = await SupportRequest.create({

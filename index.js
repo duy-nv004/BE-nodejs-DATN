@@ -10,6 +10,8 @@ const User = require("./src/models/User");
 const Plan = require("./src/models/Plan");
 const AdminLog = require("./src/models/AdminLog");
 const LandlordTicket = require("./src/models/LandlordTicket");
+// Bắt buộc require để sequelize.sync() tạo bảng SePayEvents (chống replay webhook)
+const SePayEvent = require("./src/models/SePayEvent");
 
 // Route imports
 const authRoutes = require("./src/routes/authRoutes");
@@ -24,10 +26,50 @@ const notificationRoutes = require("./src/routes/notificationRoutes");
 const sepayRoutes = require("./src/routes/sepayRoutes");
 
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
-app.use(cors());
+
+// Helmet đặt các header bảo mật cơ bản. Tắt contentSecurityPolicy vì đây là API
+// thuần JSON, không phục vụ HTML — CSP ở đây không có tác dụng và dễ gây nhiễu.
+app.use(helmet({ contentSecurityPolicy: false }));
+
+// Giới hạn CORS theo biến môi trường. Mặc định `cors()` không tham số nghĩa là
+// cho phép MỌI origin gọi kèm cookie/token. Đặt CORS_ORIGINS trong .env khi deploy.
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean);
+
+app.use(cors(
+    allowedOrigins.length > 0
+        ? { origin: allowedOrigins, credentials: true }
+        : undefined // chưa cấu hình -> giữ hành vi cũ (mở) để không chặn môi trường dev
+));
+
 app.use(express.json());
+
+// Chống dò mật khẩu: giới hạn số lần đăng nhập sai từ một địa chỉ IP.
+// express-rate-limit đã có sẵn trong package.json nhưng trước đây không dùng ở đâu.
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 phút
+    max: 10,                  // 10 lần / IP / 15 phút
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Bạn đã thử đăng nhập quá nhiều lần. Vui lòng thử lại sau 15 phút.' }
+});
+app.use('/api/auth/login', loginLimiter);
+
+// Chống spam gửi khiếu nại mở khóa tài khoản (endpoint công khai)
+const appealLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 giờ
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { message: 'Bạn đã gửi quá nhiều khiếu nại. Vui lòng thử lại sau.' }
+});
+app.use('/api/auth/appeal', appealLimiter);
 
 if (!fs.existsSync("./uploads")) {
   fs.mkdirSync("./uploads");
@@ -112,6 +154,21 @@ const startServer = async () => {
         });
         console.log("📁 Thêm cột planExpiresAt vào bảng Users thành công!");
     }
+    // Token liên kết Telegram dùng một lần, có hạn — thay cho việc truyền thẳng user.id
+    if (!tableDefinition.telegramLinkToken) {
+        await queryInterface.addColumn('Users', 'telegramLinkToken', {
+            type: require('sequelize').DataTypes.STRING,
+            allowNull: true
+        });
+        console.log("📁 Thêm cột telegramLinkToken vào bảng Users thành công!");
+    }
+    if (!tableDefinition.telegramLinkTokenExpiresAt) {
+        await queryInterface.addColumn('Users', 'telegramLinkTokenExpiresAt', {
+            type: require('sequelize').DataTypes.DATE,
+            allowNull: true
+        });
+        console.log("📁 Thêm cột telegramLinkTokenExpiresAt vào bảng Users thành công!");
+    }
 
     // Đồng bộ thêm cột cho bảng Contracts
     const contractsTableDefinition = await queryInterface.describeTable('Contracts');
@@ -177,6 +234,24 @@ const startServer = async () => {
     }
     console.log("📁 Đồng bộ hóa cấu trúc bảng Contracts thành công!");
 
+    // Đồng bộ cột cho bảng Invoices (gắn hóa đơn với người thuê / hợp đồng)
+    const invoicesTableDefinition = await queryInterface.describeTable('Invoices');
+    if (!invoicesTableDefinition.tenantId) {
+        await queryInterface.addColumn('Invoices', 'tenantId', { type: require('sequelize').DataTypes.INTEGER, allowNull: true });
+        console.log("📁 Thêm cột tenantId vào bảng Invoices thành công!");
+    }
+    if (!invoicesTableDefinition.contractId) {
+        await queryInterface.addColumn('Invoices', 'contractId', { type: require('sequelize').DataTypes.INTEGER, allowNull: true });
+        console.log("📁 Thêm cột contractId vào bảng Invoices thành công!");
+    }
+
+    // Đồng bộ cột period cho bảng MeterReadings (kỳ chốt số dạng YYYY-MM)
+    const readingsTableDefinition = await queryInterface.describeTable('MeterReadings');
+    if (!readingsTableDefinition.period) {
+        await queryInterface.addColumn('MeterReadings', 'period', { type: require('sequelize').DataTypes.STRING(7), allowNull: true });
+        console.log("📁 Thêm cột period vào bảng MeterReadings thành công!");
+    }
+
     // Đồng bộ thêm cột capacity và area cho bảng Rooms
     const roomsTableDefinition = await queryInterface.describeTable('Rooms');
     if (!roomsTableDefinition.capacity) {
@@ -230,19 +305,10 @@ const startServer = async () => {
     }
 
     // Tự động kiểm tra và chuyển tất cả tài khoản hết hạn về Gói Miễn Phí (Free)
+    const planService = require('./src/services/planService');
     const autoCheckExpiredPlans = async () => {
       try {
-        const { Op } = require('sequelize');
-        const today = new Date().toISOString().split('T')[0];
-        const [updatedCount] = await User.update(
-          { plan: 'free', planExpiresAt: null },
-          {
-            where: {
-              plan: { [Op.ne]: 'free' },
-              planExpiresAt: { [Op.lt]: today }
-            }
-          }
-        );
+        const updatedCount = await planService.expireAllOverduePlans();
         if (updatedCount > 0) {
           console.log(`⏰ [Auto Expiration Task] Đã tự động chuyển ${updatedCount} tài khoản quá hạn về Gói Miễn Phí (Free).`);
         }

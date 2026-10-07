@@ -1,14 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const { 
-  registerLandlord, 
-  login, 
-  createTenant, 
-  updateProfile, 
+const {
+  registerLandlord,
+  login,
+  createTenant,
+  updateProfile,
   changePassword,
   getPlans,
   upgradeRequest,
   getProfile,
+  getTelegramLink,
   createAppeal
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
@@ -22,6 +23,9 @@ router.post('/create-tenant', protect, authorize('landlord'), createTenant);
 router.get('/profile', protect, getProfile);
 router.put('/profile', protect, updateProfile);
 router.put('/change-password', protect, changePassword);
+
+// Sinh link liên kết Telegram Bot (token ngắn hạn, dùng một lần)
+router.get('/telegram-link', protect, getTelegramLink);
 
 // SaaS Plans & Đăng ký gói cước mới cho chủ nhà
 router.get('/plans', protect, getPlans);

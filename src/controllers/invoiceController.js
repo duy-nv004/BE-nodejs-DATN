@@ -3,7 +3,7 @@ const invoiceService = require('../services/invoiceService');
 // 1. XUẤT HÓA ĐƠN
 exports.generateInvoice = async (req, res) => {
     try {
-        const result = await invoiceService.generateInvoice(req.body);
+        const result = await invoiceService.generateInvoice(req.body, req.user.id);
         res.status(201).json(result);
     } catch (err) {
         res.status(err.statusCode || 500).json({ message: err.message });
@@ -13,7 +13,7 @@ exports.generateInvoice = async (req, res) => {
 // 2. XÁC NHẬN THANH TOÁN
 exports.updatePaymentStatus = async (req, res) => {
     try {
-        const result = await invoiceService.updatePaymentStatus(req.params.id, req.body);
+        const result = await invoiceService.updatePaymentStatus(req.params.id, req.body, req.user.id);
         res.json(result);
     } catch (err) {
         res.status(err.statusCode || 500).json({ message: err.message });

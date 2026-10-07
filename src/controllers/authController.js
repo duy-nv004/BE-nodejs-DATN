@@ -201,6 +201,20 @@ exports.getProfile = async (req, res) => {
     }
 };
 
+/**
+ * Sinh deep-link liên kết Telegram Bot cho người dùng đang đăng nhập.
+ * Sinh theo yêu cầu (lúc bấm nút) chứ không nhúng vào GET /profile, vì
+ * /profile được Frontend polling liên tục trong lúc chờ thanh toán.
+ */
+exports.getTelegramLink = async (req, res) => {
+    try {
+        const result = await authService.generateTelegramLink(req.user.id);
+        res.json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
+
 exports.createAppeal = async (req, res) => {
     try {
         const { email, title, message } = req.body;

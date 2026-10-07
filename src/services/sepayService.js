@@ -6,9 +6,32 @@ const User = require('../models/User');
 const Plan = require('../models/Plan');
 const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const AdminLog = require('../models/AdminLog');
+const SePayEvent = require('../models/SePayEvent');
 const notificationService = require('./notificationService');
 const invoiceService = require('./invoiceService');
+const crypto = require('crypto');
 const { isAnnualCycle, cycleDays, planPriceVnd } = require('../utils/planPricing');
+
+/**
+ * Khoá định danh duy nhất cho một giao dịch webhook, dùng để chống xử lý trùng.
+ *
+ * Ưu tiên ID do SePay cấp. Nếu webhook không kèm ID nào, băm các trường đặc trưng
+ * của giao dịch (thời điểm + nội dung + số tiền + số tài khoản). transactionDate do
+ * SePay cung cấp có độ phân giải tới giây nên hai giao dịch khác nhau hầu như không
+ * bao giờ trùng dấu vân tay.
+ */
+const buildEventKey = (payload, content, amount) => {
+    const sepayId = payload?.id || payload?.referenceCode || payload?.reference_number;
+    if (sepayId) return `sepay:${sepayId}`;
+
+    const fingerprint = [
+        payload?.transactionDate || '',
+        content,
+        amount,
+        payload?.accountNumber || ''
+    ].join('|');
+    return `hash:${crypto.createHash('sha256').update(fingerprint).digest('hex')}`;
+};
 
 /**
  * Xử lý Webhook gửi từ SePay khi có giao dịch ngân hàng mới.
@@ -18,29 +41,66 @@ const { isAnnualCycle, cycleDays, planPriceVnd } = require('../utils/planPricing
  * 1. Thanh toán gói dịch vụ của Chủ nhà: Cú pháp `PLAN <LANDLORD_ID> <PLAN_NAME>` (Ví dụ: `PLAN 5 PRO`)
  * 2. Thanh toán tiền phòng của Người thuê: Cú pháp `HD <INVOICE_ID> LL <LANDLORD_ID>` (Ví dụ: `HD 12 LL 5`)
  */
+/**
+ * Cổng vào webhook: chống xử lý trùng rồi mới chuyển sang logic nghiệp vụ.
+ *
+ * SePay gửi lại webhook khi không nhận được HTTP 200, và payload cũ cũng có thể bị
+ * gửi lại thủ công. Không có chốt chặn này thì mỗi lần lặp lại một giao dịch
+ * "PLAN <id> PRO YEAR" hợp lệ sẽ cộng thêm 365 ngày vào hạn gói cước, vì sau lần
+ * đầu tiên PlanUpgradeRequest đã chuyển sang `paid` nên không còn được tìm thấy
+ * và giá được tính lại theo bảng Plans.
+ */
 exports.processWebhookPayload = async (payload) => {
+    const { content, description, transferAmount } = payload || {};
+    const transferContent = (content || description || '').trim();
+    const amount = parseFloat(transferAmount || 0);
+
+    // Nội dung rỗng thì không có gì để nhận diện — để logic bên dưới xử lý và trả về.
+    let event = null;
+    if (transferContent) {
+        const eventKey = buildEventKey(payload, transferContent, amount);
+        try {
+            event = await SePayEvent.create({
+                eventKey,
+                content: transferContent,
+                transferAmount: amount,
+                payload: JSON.stringify(payload)
+            });
+        } catch (err) {
+            if (err.name === 'SequelizeUniqueConstraintError') {
+                console.log(`ℹ️ [SePay Webhook] Bỏ qua giao dịch đã xử lý trước đó (key=${eventKey}).`);
+                return {
+                    success: true,
+                    duplicated: true,
+                    message: 'Giao dịch này đã được xử lý trước đó, bỏ qua để tránh cộng trùng.'
+                };
+            }
+            throw err;
+        }
+    }
+
+    const result = await processPayload(payload, transferContent, amount);
+
+    if (event) {
+        event.resultType = result?.type || (result?.success ? 'OK' : 'REJECTED');
+        await event.save();
+    }
+    return result;
+};
+
+const processPayload = async (payload, transferContent, amount) => {
     console.log('🔔 [SePay Webhook Received]:', JSON.stringify(payload, null, 2));
 
-    const {
-        transferType,
-        transferAmount,
-        content,
-        description,
-        transactionDate,
-        accountNumber
-    } = payload || {};
+    const { transferType } = payload || {};
 
     // Chỉ xử lý tiền vào (transferType = 'in' hoặc tiền nhận > 0)
     if (transferType && transferType.toLowerCase() === 'out') {
         return { success: true, message: 'Bỏ qua giao dịch tiền ra (out)' };
     }
 
-    const transferContent = (content || description || '').trim();
     if (!transferContent) {
         return { success: true, message: 'Không tìm thấy nội dung chuyển khoản' };
     }
-
-    const amount = parseFloat(transferAmount || 0);
 
     // ─── 1. KIỂM TRA THANH TOÁN GÓI DỊCH VỤ SAAS (CHỦ NHÀ) ──────────────────────
     // Cú pháp: PLAN <LANDLORD_ID> <PLAN_NAME> [YEAR|ANNUAL|NAM] (Ví dụ: PLAN 5 PRO hoặc PLAN 5 PRO YEAR)
@@ -179,6 +239,39 @@ exports.processWebhookPayload = async (payload) => {
         if (invoice.isPaid) {
             console.log(`ℹ️ [SePay Webhook] Hóa đơn ID ${invoiceId} đã được gạch nợ trước đó.`);
             return { success: true, message: `Hóa đơn ID ${invoiceId} đã được thanh toán từ trước` };
+        }
+
+        // 🔒 Chốt chặn: KHÔNG gạch nợ nếu số tiền nhận được nhỏ hơn tổng tiền hóa đơn.
+        // Trước đây nhánh này chỉ kiểm tra invoiceId có tồn tại, nên chuyển vài nghìn
+        // đồng kèm nội dung "HD <id>" là hóa đơn được đánh dấu đã thanh toán.
+        const invoiceTotal = parseFloat(invoice.totalAmount || 0);
+        if (amount < invoiceTotal) {
+            console.warn(`⚠️ [SePay Webhook] Số tiền không đủ cho Hóa đơn #${invoiceId}: nhận ${amount} / cần ${invoiceTotal}`);
+
+            await AdminLog.create({
+                adminId: 1,
+                action: 'INVOICE_PAYMENT_REJECTED',
+                targetUserId: landlordId || null,
+                description: `[SePay] Từ chối gạch nợ Hóa đơn #${invoiceId} (phòng ${invoice.roomDetails?.roomNumber || 'N/A'}): số tiền nhận được ${amount.toLocaleString('vi-VN')} VNĐ nhỏ hơn tổng hóa đơn ${invoiceTotal.toLocaleString('vi-VN')} VNĐ`
+            });
+
+            if (landlordId) {
+                await notificationService.createNotification(
+                    landlordId,
+                    'Giao dịch chưa đủ để tất toán hóa đơn',
+                    `Hệ thống nhận được ${amount.toLocaleString('vi-VN')} VNĐ cho Hóa đơn #${invoiceId} (phòng ${invoice.roomDetails?.roomNumber || 'N/A'}) `
+                    + `nhưng tổng tiền hóa đơn là ${invoiceTotal.toLocaleString('vi-VN')} VNĐ. Hóa đơn chưa được gạch nợ.`,
+                    'invoice_payment',
+                    invoiceId
+                );
+            }
+
+            return {
+                success: false,
+                type: 'INVOICE_UNDERPAID',
+                invoiceId,
+                message: `Số tiền ${amount} VNĐ không đủ để tất toán Hóa đơn #${invoiceId} (cần ${invoiceTotal} VNĐ)`
+            };
         }
 
         // Tự động chuyển trạng thái thanh toán

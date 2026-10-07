@@ -59,12 +59,7 @@ exports.rejectContract = async (req, res) => {
 // 4. TẠO YÊU CẦU HỖ TRỢ MỚI
 exports.createSupportRequest = async (req, res) => {
     try {
-        // req.body chứa thông tin người thuê gửi lên (ví dụ: tiêu đề, nội dung)
-        const requestData = req.body; 
-        
-        // Gọi service để tạo yêu cầu (tùy thuộc vào hàm trong supportService của bạn)
-        const result = await supportService.createRequest(req.user.id, requestData); 
-        
+        const result = await supportService.createTenantRequest(req.user.id, req.body);
         res.status(201).json({ message: 'Tạo yêu cầu hỗ trợ thành công', data: result });
     } catch (err) {
         res.status(err.statusCode || 500).json({ message: err.message });

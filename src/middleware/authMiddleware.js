@@ -19,27 +19,18 @@ const protect = async (req, res, next) => {
             }
 
             // Tự động kiểm tra hết hạn gói cước -> Chuyển về Gói Miễn Phí (Free) nếu quá hạn
-            if (req.user.plan && req.user.plan !== 'free' && req.user.planExpiresAt) {
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const expDate = new Date(req.user.planExpiresAt);
-                expDate.setHours(0, 0, 0, 0);
+            const planService = require('../services/planService');
+            const { expired, oldPlan } = await planService.syncExpiredPlan(req.user);
 
-                if (expDate < today) {
-                    const oldPlan = req.user.plan;
-                    req.user.plan = 'free';
-                    req.user.planExpiresAt = null;
-                    await req.user.save();
-
-                    const notificationService = require('../services/notificationService');
-                    await notificationService.createNotification(
-                        req.user.id,
-                        'Gói dịch vụ đã hết hạn',
-                        `Gói dịch vụ ${oldPlan.toUpperCase()} của bạn đã hết hạn. Hệ thống đã tự động chuyển tài khoản của bạn về Gói Miễn Phí (Free).`,
-                        'plan_expiry',
-                        req.user.id
-                    );
-                }
+            if (expired) {
+                const notificationService = require('../services/notificationService');
+                await notificationService.createNotification(
+                    req.user.id,
+                    'Gói dịch vụ đã hết hạn',
+                    `Gói dịch vụ ${oldPlan.toUpperCase()} của bạn đã hết hạn. Hệ thống đã tự động chuyển tài khoản của bạn về Gói Miễn Phí (Free).`,
+                    'plan_expiry',
+                    req.user.id
+                );
             }
 
             return next();

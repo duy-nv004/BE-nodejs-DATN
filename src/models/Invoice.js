@@ -47,10 +47,28 @@ const Invoice = sequelize.define('Invoice', {
     landlordId: {
         type: DataTypes.INTEGER,
         allowNull: true
+    },
+    // Gắn hóa đơn với người thuê / hợp đồng cụ thể.
+    // Trước đây hóa đơn chỉ có roomId nên khách thuê mới vào phòng sẽ nhìn thấy
+    // toàn bộ công nợ của khách thuê trước (xem tenantService.getInvoices).
+    tenantId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: { model: 'Users', key: 'id' }
+    },
+    contractId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: { model: 'Contracts', key: 'id' }
     }
 }, { 
     tableName: 'Invoices',
-    timestamps: true // Nên có để biết hóa đơn được tạo lúc nào
+    timestamps: true, // Nên có để biết hóa đơn được tạo lúc nào
+    indexes: [
+        // Mỗi phòng chỉ có đúng 1 hóa đơn cho mỗi kỳ. Chặn ở tầng DB vì kiểm tra
+        // ở tầng service vẫn có khe hở khi hai request chạy song song.
+        { unique: true, fields: ['roomId', 'month', 'year'], name: 'invoices_room_period_unique' }
+    ]
 });
 
 module.exports = Invoice;

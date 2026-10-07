@@ -30,6 +30,11 @@ const User = sequelize.define('User', {
         type: DataTypes.STRING,
         allowNull: true,
     },
+    // Token ngắn hạn cho deep-link /start <token> của Telegram Bot.
+    // Không dùng thẳng user.id: ai cũng gửi được /start <id> tới bot và như vậy
+    // sẽ gán chat Telegram của họ vào bất kỳ tài khoản nào (xem telegramRoutes).
+    telegramLinkToken: { type: DataTypes.STRING, allowNull: true },
+    telegramLinkTokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
     cccd: { type: DataTypes.STRING, allowNull: true },
     dob: { type: DataTypes.STRING, allowNull: true },
     hometown: { type: DataTypes.TEXT, allowNull: true },

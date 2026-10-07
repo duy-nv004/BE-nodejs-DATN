@@ -8,6 +8,7 @@ const AdminLog = require('../models/AdminLog');
 const LandlordTicket = require('../models/LandlordTicket');
 const bcrypt = require('bcryptjs');
 const emailService = require('./emailService');
+const { Op } = require('sequelize');
 const { createError } = require('../utils/errors');
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
@@ -82,12 +83,43 @@ exports.getSystemStats = async () => {
         }),
     ]);
 
-    // Tính MRR (Monthly Recurring Revenue) từ gói cước chủ nhà đăng ký
+    // Tính MRR (Monthly Recurring Revenue).
+    // Phải lọc theo hạn sử dụng và trạng thái khóa, nếu không thì:
+    //  - chủ nhà trả theo NĂM bị tính như trả theo tháng (thiếu hệ số /12)
+    //  - gói đã hết hạn nhưng chưa tới lượt quét của tiến trình nền vẫn được tính
+    //  - tài khoản bị khóa vẫn sinh doanh thu ảo
     const planPrices = {};
-    plans.forEach(p => { planPrices[p.name] = parseFloat(p.price) || 0; });
-    const totalRevenue = (freeCount * (planPrices['free'] || 0))
-        + (basicCount * (planPrices['basic'] || 0))
-        + (proCount * (planPrices['pro'] || 0));
+    plans.forEach(p => {
+        planPrices[p.name] = {
+            monthly: parseFloat(p.price) || 0,
+            annual: parseFloat(p.annualPrice) || 0
+        };
+    });
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const activeSubscribers = await User.findAll({
+        where: { roleId: landlordRole.id, plan: { [Op.ne]: 'free' }, status: { [Op.ne]: 'locked' } },
+        attributes: ['plan', 'planExpiresAt']
+    });
+
+    // Quy đổi về doanh thu tháng. `annualPrice` là giá cho cả năm nên phải chia 12.
+    const totalRevenue = activeSubscribers.reduce((sum, u) => {
+        // Hạn sử dụng đã qua -> không còn là doanh thu định kỳ
+        if (u.planExpiresAt && new Date(u.planExpiresAt) < startOfToday) return sum;
+
+        const price = planPrices[u.plan];
+        if (!price) return sum;
+
+        // Hạn còn lại trên 60 ngày => đang ở chu kỳ năm
+        const daysLeft = u.planExpiresAt
+            ? (new Date(u.planExpiresAt) - startOfToday) / 86400000
+            : 30;
+        const isAnnual = daysLeft > 60;
+
+        return sum + (isAnnual ? price.annual / 12 : price.monthly);
+    }, 0);
 
     return {
         stats: {
@@ -357,9 +389,12 @@ exports.resolveLandlordTicket = async (ticketId, status, adminId) => {
             await exports.updateLandlordStatus(landlord.id, 'active', adminId);
         }
     } else {
+        // Không dùng LOCK_USER ở đây: tài khoản đã bị khóa từ trước và hành động
+        // thực tế là từ chối khiếu nại, không phải khóa. Ghi nhầm nhãn khiến màn
+        // Nhật ký hiển thị sai bản chất thao tác.
         await AdminLog.create({
             adminId,
-            action: 'LOCK_USER',
+            action: 'TICKET_REJECTED',
             targetUserId: ticket.landlordId,
             description: `Admin từ chối duyệt ticket khiếu nại (ID: ${ticket.id}) của chủ nhà email: ${ticket.email}`,
         });

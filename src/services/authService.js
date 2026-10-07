@@ -1,12 +1,17 @@
 const User = require('../models/User');
 const Role = require('../models/Role');
 const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
+const planService = require('./planService');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { Op } = require('sequelize');
 const { createError } = require('../utils/errors');
 
 const signToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+
+/** Thời gian sống của link liên kết Telegram (phút) */
+const TELEGRAM_LINK_TTL_MINUTES = 15;
 
 exports.registerLandlord = async ({ email, password, name }) => {
     if (!email || !password) {
@@ -30,6 +35,34 @@ exports.registerLandlord = async ({ email, password, name }) => {
     };
 };
 
+/**
+ * Sinh deep-link liên kết Telegram dùng token ngắn hạn thay vì user.id.
+ *
+ * Trước đây link là `?start=<user.id>` — ai đoán được id cũng gán được chat Telegram
+ * của mình vào tài khoản đó. Token ở đây là 32 byte ngẫu nhiên, hết hạn sau 15 phút
+ * và bị xoá ngay khi liên kết thành công (xem telegramRoutes POST /webhook).
+ *
+ * @param {number} userId
+ * @returns {Promise<{telegramConnectLink: string, expiresAt: Date}>}
+ */
+exports.generateTelegramLink = async (userId) => {
+    const user = await User.findByPk(userId);
+    if (!user) throw createError(404, 'Người dùng không tồn tại');
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + TELEGRAM_LINK_TTL_MINUTES * 60 * 1000);
+
+    user.telegramLinkToken = token;
+    user.telegramLinkTokenExpiresAt = expiresAt;
+    await user.save();
+
+    const botUsername = process.env.TELEGRAM_BOT_USERNAME || 'phongtro_smart_bot';
+    return {
+        telegramConnectLink: `https://t.me/${botUsername}?start=${token}`,
+        expiresAt
+    };
+};
+
 exports.loginUser = async ({ identity, password }) => {
     if (!identity || !password) {
         throw createError(400, 'Vui lòng cung cấp đầy đủ thông tin đăng nhập');
@@ -50,26 +83,9 @@ exports.loginUser = async ({ identity, password }) => {
         throw createError(403, 'Tài khoản của bạn đã bị khóa bởi quản trị viên');
     }
 
-    if (user.plan && user.plan !== 'free' && user.planExpiresAt) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const expDate = new Date(user.planExpiresAt);
-        expDate.setHours(0, 0, 0, 0);
-
-        if (expDate < today) {
-            user.plan = 'free';
-            user.planExpiresAt = null;
-            await user.save();
-        }
-    }
+    await planService.syncExpiredPlan(user);
 
     const roleName = user.roleData.name;
-    let telegramConnectLink = null;
-
-    if (roleName.toLowerCase() === 'tenant' && !user.telegramChatId) {
-        const botUsername = process.env.TELEGRAM_BOT_USERNAME || 'phongtro_smart_bot';
-        telegramConnectLink = `https://t.me/${botUsername}?start=${user.id}`;
-    }
 
     return {
         token: signToken(user.id),
@@ -82,8 +98,7 @@ exports.loginUser = async ({ identity, password }) => {
         planExpiresAt: user.planExpiresAt,
         cccd: user.cccd,
         dob: user.dob,
-        hometown: user.hometown,
-        telegramConnectLink
+        hometown: user.hometown
     };
 };
 
@@ -184,18 +199,7 @@ exports.getProfile = async (userId) => {
         throw createError(404, 'Người dùng không tồn tại');
     }
 
-    if (user.plan && user.plan !== 'free' && user.planExpiresAt) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const expDate = new Date(user.planExpiresAt);
-        expDate.setHours(0, 0, 0, 0);
-
-        if (expDate < today) {
-            user.plan = 'free';
-            user.planExpiresAt = null;
-            await user.save();
-        }
-    }
+    await planService.syncExpiredPlan(user);
 
     // Yêu cầu nâng cấp đang chờ thanh toán (nếu có) để Frontend hiển thị trạng thái
     const pendingUpgrade = await PlanUpgradeRequest.findOne({

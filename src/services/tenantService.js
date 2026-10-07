@@ -85,8 +85,10 @@ exports.getDashboardSummary = async (userId) => {
         };
     }
 
+    // Lọc theo hợp đồng, không theo phòng: nếu lọc theo roomId thì khách thuê mới
+    // vào phòng sẽ nhìn thấy toàn bộ công nợ của khách thuê trước đó.
     const invoices = contract.status === 'active' ? await Invoice.findAll({
-        where: { roomId: contract.roomId },
+        where: { contractId: contract.id },
         order: [['year', 'DESC'], ['month', 'DESC']]
     }) : [];
 
@@ -156,7 +158,7 @@ exports.getInvoices = async (userId) => {
     }
 
     const invoices = await Invoice.findAll({
-        where: { roomId: contract.roomId },
+        where: { contractId: contract.id },
         order: [['year', 'DESC'], ['month', 'DESC']]
     });
 
