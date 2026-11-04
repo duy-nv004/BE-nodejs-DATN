@@ -6,7 +6,9 @@ const { protect, authorize } = require('../middleware/authMiddleware');
 // Tất cả các API hóa đơn dịch vụ yêu cầu xác thực JWT và quyền landlord
 router.use(protect, authorize('landlord'));
 
+router.get('/', invoiceController.listInvoices);
 router.post('/generate', invoiceController.generateInvoice);
+router.delete('/:id', invoiceController.deleteInvoice);
 router.post('/:id/payment', invoiceController.updatePaymentStatus);
 router.get('/status', invoiceController.getRevenueStats);
 

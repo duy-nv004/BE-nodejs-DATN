@@ -18,6 +18,10 @@ const SePayEvent = sequelize.define('SePayEvent', {
     content: { type: DataTypes.TEXT, allowNull: true },
     transferAmount: { type: DataTypes.DECIMAL(15, 2), allowNull: true },
     resultType: { type: DataTypes.STRING, allowNull: true },
+    status: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'PROCESSED' },
+    invoiceId: { type: DataTypes.INTEGER, allowNull: true },
+    landlordId: { type: DataTypes.INTEGER, allowNull: true },
+    errorReason: { type: DataTypes.TEXT, allowNull: true },
     payload: { type: DataTypes.TEXT('long'), allowNull: true }
 }, { timestamps: true, tableName: 'SePayEvents' });
 

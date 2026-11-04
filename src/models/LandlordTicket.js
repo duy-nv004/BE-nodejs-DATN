@@ -25,6 +25,11 @@ const LandlordTicket = sequelize.define(
     status: {
       type: DataTypes.ENUM("pending", "resolved", "rejected"),
       defaultValue: "pending"
+    },
+    // T2.17: lý do admin từ chối khiếu nại (gửi kèm email cho chủ nhà)
+    rejectReason: {
+      type: DataTypes.TEXT,
+      allowNull: true
     }
   },
   {

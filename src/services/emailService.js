@@ -71,3 +71,34 @@ exports.sendNewPasswordEmail = async (toEmail, landlordName, newPassword) => {
         return false;
     }
 };
+
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/**
+ * T2.17: báo cho chủ nhà biết khiếu nại mở khóa bị từ chối và lý do.
+ * Tài khoản đang bị khóa nên không đăng nhập xem thông báo được, email là kênh duy nhất.
+ * @returns {Promise<boolean>} true nếu gửi thành công, false nếu có lỗi
+ */
+exports.sendTicketRejectedEmail = async (toEmail, reason) => {
+    const mailOptions = {
+        from: `"Executive Lens Support" <${process.env.EMAIL_USER}>`,
+        to: toEmail,
+        subject: 'Khiếu nại mở khóa tài khoản bị từ chối - Executive Lens',
+        html: `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; color: #1a202c;">
+        <h2 style="color: #0f172a; margin-top: 0;">Khiếu nại chưa được chấp nhận</h2>
+        <p>Quản trị viên đã xem xét và từ chối yêu cầu mở khóa tài khoản chủ nhà của bạn.</p>
+        <p><b>Lý do:</b> ${escapeHtml(reason)}</p>
+        <p>Bạn có thể gửi khiếu nại mới kèm thông tin bổ sung.</p>
+        <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">Trân trọng,<br/>Ban quản trị Executive Lens</p>
+    </div>`,
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        return true;
+    } catch (error) {
+        console.error(`❌ [emailService] Lỗi khi gửi email từ chối khiếu nại tới ${toEmail}:`, error.message);
+        return false;
+    }
+};

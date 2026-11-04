@@ -12,10 +12,17 @@ const Service = sequelize.define(
     cleaningPrice: { type: DataTypes.DECIMAL(10, 2), defaultValue: 50000 }, // 50k/người
     buildingId: {
       type: DataTypes.INTEGER,
+      unique: true,
       references: { model: Building, key: "id" },
     },
   },
-  { tableName: "Services", timestamps: false },
+  {
+    tableName: "Services",
+    timestamps: false,
+    indexes: [
+      { unique: true, fields: ["buildingId"], name: "services_building_unique" },
+    ],
+  },
 );
 
 module.exports = Service;

@@ -3,7 +3,7 @@ const { consumeAILimit } = require('../middleware/checkLimit');
 
 exports.readMeter = async (req, res) => {
     try {
-        const result = await aiService.readMeterFromImage(req.file);
+        const result = await aiService.readMeterFromImage(req.file, req.file?.mimetype);
         // Chỉ trừ lượt sau khi AI đã đọc được số. Upload lỗi hoặc AI trả 422
         // sẽ ném lỗi ở dòng trên và không tiêu tốn hạn mức của người dùng.
         await consumeAILimit(req.user.id);

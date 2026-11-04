@@ -14,6 +14,8 @@ const MeterReading = sequelize.define(
     // tháng nào, phải suy ra từ "2 bản ghi mới nhất" — vừa nhân bản khi chốt số
     // nhiều lần, vừa tính sai khi xuất lại hóa đơn cho cùng một kỳ.
     period: { type: DataTypes.STRING(7), allowNull: true },
+    meterReset: { type: DataTypes.BOOLEAN, defaultValue: false },
+    resetReason: { type: DataTypes.STRING(255), allowNull: true },
     roomId: {
       type: DataTypes.INTEGER,
       references: { model: Room, key: "id" },

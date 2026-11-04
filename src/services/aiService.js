@@ -2,20 +2,121 @@ const OpenAI = require("openai");
 const fs = require("fs");
 const { createError } = require("../utils/errors");
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
+/**
+ * Đọc chỉ số đồng hồ từ văn bản AI trả về. Chỉ chấp nhận ĐÚNG MỘT cụm chữ số
+ * nguyên liên tiếp: "12.5" / "123 456" đều từ chối, không bóc hết ký tự rồi
+ * parseInt (trước đây "12.5" thành 125, "123 456" thành 123456).
+ */
+const parseMeterText = (text) => {
+    const raw = String(text ?? '').trim();
+    if (!raw) throw createError(422, "AI không nhận diện được con số nào.");
+    if (/\d+[.,]\d+/.test(raw)) {
+        throw createError(422, "AI trả về chỉ số lẫn dấu thập phân. Vui lòng chụp rõ hơn.");
+    }
+    const groups = raw.match(/\d+/g) || [];
+    if (groups.length !== 1) {
+        throw createError(422, "AI trả về nhiều dãy số. Vui lòng chụp rõ hơn.");
+    }
+    const value = parseInt(groups[0], 10);
+    // Đồng hồ điện/nước thực tế không quá 8 chữ số; dài hơn là AI đọc sai.
+    if (!Number.isFinite(value) || value < 0 || value > 99999999) {
+        throw createError(422, "AI không nhận diện được các con số màu đen. Vui lòng chụp rõ hơn.");
+    }
+    return value;
+};
 
-exports.readMeterFromImage = async (file) => {
-    if (!file) {
+/**
+ * Làm sạch thông tin CCCD do AI trả về (T1.12).
+ * Mọi trường hợp sau khi lấy chữ số mà digits.length !== 12 đều trả cccdNumber = ''
+ * và thêm cảnh báo vào warnings (không tự động padStart thêm số 0).
+ */
+const normalizeCccdData = (data) => {
+    const out = {
+        name: String(data?.name ?? '').trim(),
+        dob: String(data?.dob ?? '').trim(),
+        cccdNumber: '',
+        hometown: String(data?.hometown ?? '').trim(),
+    };
+    const warnings = [];
+
+    const raw = data?.cccdNumber;
+    const digits = String(raw ?? '').replace(/\D/g, '');
+    if (digits.length === 12) {
+        out.cccdNumber = digits;
+    } else if (digits.length === 0) {
+        warnings.push('Không đọc được số CCCD.');
+    } else {
+        warnings.push(`Số CCCD chỉ nhận được ${digits.length} chữ số, vui lòng kiểm tra lại.`);
+    }
+
+    const dobMatch = out.dob.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (!dobMatch) {
+        warnings.push('Ngày sinh sai định dạng DD/MM/YYYY.');
+        out.dob = '';
+    } else {
+        const [, dd, mm, yyyy] = dobMatch;
+        const d = new Date(+yyyy, +mm - 1, +dd);
+        if (d.getFullYear() !== +yyyy || d.getMonth() !== +mm - 1 || d.getDate() !== +dd) {
+            warnings.push('Ngày sinh không tồn tại.');
+            out.dob = '';
+        }
+    }
+    return { data: out, warnings };
+};
+
+/**
+ * Ánh xạ lỗi từ OpenAI SDK sang thông báo tiếng Việt thân thiện, không lộ API key/billing (T3.8).
+ */
+const mapOpenAIError = (err) => {
+    const status = err?.status || err?.statusCode;
+    if (status === 429) {
+        return createError(503, "Hệ thống AI đang quá tải, vui lòng thử lại sau ít phút.");
+    }
+    if (status === 401 || status === 403) {
+        return createError(500, "Dịch vụ AI tạm thời gián đoạn.");
+    }
+    return null;
+};
+
+exports.parseMeterText = parseMeterText;
+exports.normalizeCccdData = normalizeCccdData;
+exports.mapOpenAIError = mapOpenAIError;
+
+// Khởi tạo client khi cần (không phải lúc require) để test các hàm thuần không
+// đòi OPENAI_API_KEY.
+let openaiClient = null;
+const getOpenAI = () => {
+    if (!openaiClient) openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    return openaiClient;
+};
+exports.__setOpenAIClientForTest = (client) => {
+    openaiClient = client;
+};
+
+exports.readMeterFromImage = async (fileOrBase64, mimeType = 'image/jpeg') => {
+    if (!fileOrBase64) {
         throw createError(400, "Vui lòng upload ảnh đồng hồ");
     }
 
-    try {
-        // Chuyển ảnh sang Base64
-        const base64Image = Buffer.from(fs.readFileSync(file.path)).toString("base64");
+    const isFileObj = typeof fileOrBase64 === 'object' && fileOrBase64 !== null;
+    const filePath = isFileObj ? fileOrBase64.path : null;
+    const resolvedMime = (isFileObj ? (mimeType !== 'image/jpeg' ? mimeType : fileOrBase64.mimetype) : mimeType) || 'image/jpeg';
 
-        const response = await openai.chat.completions.create({
+    try {
+        let base64Image;
+        if (isFileObj) {
+            if (fileOrBase64.buffer) {
+                base64Image = Buffer.from(fileOrBase64.buffer).toString("base64");
+            } else {
+                base64Image = Buffer.from(fs.readFileSync(fileOrBase64.path)).toString("base64");
+            }
+        } else if (typeof fileOrBase64 === 'string' && fs.existsSync(fileOrBase64)) {
+            base64Image = Buffer.from(fs.readFileSync(fileOrBase64)).toString("base64");
+        } else {
+            base64Image = String(fileOrBase64);
+        }
+
+        const response = await getOpenAI().chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 {
@@ -34,8 +135,8 @@ exports.readMeterFromImage = async (file) => {
                         {
                             type: "image_url",
                             image_url: {
-                                url: `data:image/jpeg;base64,${base64Image}`,
-                                detail: "low"
+                                url: `data:${resolvedMime};base64,${base64Image}`,
+                                detail: "high"
                             },
                         },
                     ],
@@ -45,16 +146,10 @@ exports.readMeterFromImage = async (file) => {
         });
 
         // Xóa file tạm ngay lập tức
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
         const aiText = response.choices[0].message.content.trim();
-        const readingValue = parseInt(aiText.replace(/\D/g, ""));
-
-        if (isNaN(readingValue)) {
-            const err = createError(422, "AI không nhận diện được các con số màu đen. Vui lòng chụp rõ hơn.");
-            err.raw_output = aiText;
-            throw err;
-        }
+        const readingValue = parseMeterText(aiText);
 
         return {
             message: "AI đã trích xuất chỉ số (phần số đen) thành công",
@@ -63,7 +158,9 @@ exports.readMeterFromImage = async (file) => {
         };
 
     } catch (err) {
-        if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        const mapped = mapOpenAIError(err);
+        if (mapped) throw mapped;
         console.error("OpenAI Service Error:", err);
         throw err;
     }
@@ -84,16 +181,17 @@ exports.readCccdFromImage = async (filesOrFile) => {
     try {
         const imageContent = files.map(file => {
             const base64Image = Buffer.from(fs.readFileSync(file.path)).toString("base64");
+            const mime = file.mimetype || 'image/jpeg';
             return {
                 type: "image_url",
                 image_url: {
-                    url: `data:image/jpeg;base64,${base64Image}`,
+                    url: `data:${mime};base64,${base64Image}`,
                     detail: "high"
                 }
             };
         });
 
-        const response = await openai.chat.completions.create({
+        const response = await getOpenAI().chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 {
@@ -107,7 +205,7 @@ exports.readCccdFromImage = async (filesOrFile) => {
                                    Các trường thông tin cần trích xuất bao gồm:
                                    1. name: Họ và tên (chữ in hoa có dấu, ví dụ: "TẠ ĐÌNH CƯỜNG")
                                    2. dob: Ngày tháng năm sinh (định dạng DD/MM/YYYY, ví dụ: "17/12/2004")
-                                   3. cccdNumber: Số CCCD (12 chữ số)
+                                   3. cccdNumber: Số CCCD, chuỗi đủ 12 chữ số kể cả các số 0 ở đầu (ví dụ: "001204012345"), không cắt bớt
                                    4. hometown: Nơi thường trú hoặc Quê quán (ví dụ: "Hồng Giang, Lục Ngạn, Bắc Giang")
                                    
                                    YÊU CẦU QUAN TRỌNG:
@@ -125,12 +223,12 @@ exports.readCccdFromImage = async (filesOrFile) => {
                     ],
                 },
             ],
-            max_tokens: 300,
+            max_tokens: 500,
         });
 
         // Xóa file tạm ngay lập tức
         files.forEach(file => {
-            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+            if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
         });
 
         const aiText = response.choices[0].message.content.trim();
@@ -142,15 +240,19 @@ exports.readCccdFromImage = async (filesOrFile) => {
         }
 
         const data = JSON.parse(jsonText);
+        // Số CCCD luôn là chuỗi 12 chữ số: sai độ dài thì để trống + cảnh báo cho UI.
+        const normalized = normalizeCccdData(data);
         return {
             message: "AI đã trích xuất thông tin CCCD thành công",
-            data
+            ...normalized
         };
 
     } catch (err) {
         files.forEach(file => {
-            if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+            if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
         });
+        const mapped = mapOpenAIError(err);
+        if (mapped) throw mapped;
         console.error("OpenAI scanCccd Error:", err);
         throw createError(422, "Không thể nhận diện được thông tin từ ảnh căn cước công dân này. Vui lòng chụp rõ và vuông góc hơn.");
     }

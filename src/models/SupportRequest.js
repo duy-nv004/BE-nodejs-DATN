@@ -15,7 +15,19 @@ const SupportRequest = sequelize.define('SupportRequest', {
         defaultValue: 'pending' 
     },
     tenantId: { type: DataTypes.INTEGER, references: { model: User, key: 'id' } },
-    roomId: { type: DataTypes.INTEGER, references: { model: Room, key: 'id' } }
+    roomId: { type: DataTypes.INTEGER, references: { model: Room, key: 'id' } },
+    // Loại sự cố: electric | water | furniture | appliance | internet | other (kiểm tra trong service)
+    category: { type: DataTypes.STRING(30), allowNull: false, defaultValue: 'other' },
+    // Mảng đường dẫn ảnh lưu dạng JSON, getter luôn trả về mảng
+    images: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        get() {
+            try { return JSON.parse(this.getDataValue('images') || '[]'); } catch { return []; }
+        }
+    },
+    landlordNote: { type: DataTypes.TEXT, allowNull: true },
+    repairCost: { type: DataTypes.DECIMAL(12, 0), allowNull: true }
 }, { tableName: 'SupportRequests' });
 
 module.exports = SupportRequest;

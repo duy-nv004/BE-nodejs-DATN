@@ -6,13 +6,14 @@ const User = require('../models/User');
 const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const adminService = require('../services/adminService');
 const { isAnnualCycle, normalizeCycle, planPriceVnd, buildTransferCode } = require('../utils/planPricing');
+const { sendError } = require('../utils/errors');
 
 exports.registerLandlord = async (req, res) => {
     try {
         const result = await authService.registerLandlord(req.body);
         res.status(201).json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -21,7 +22,7 @@ exports.login = async (req, res) => {
         const result = await authService.loginUser(req.body);
         res.json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -30,7 +31,7 @@ exports.createTenant = async (req, res) => {
         const result = await authService.createTenant(req.user.id, req.body);
         res.status(201).json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -39,7 +40,7 @@ exports.updateProfile = async (req, res) => {
         const result = await authService.updateProfile(req.user.id, req.body);
         res.json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -48,7 +49,7 @@ exports.changePassword = async (req, res) => {
         const result = await authService.changePassword(req.user.id, req.body);
         res.json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -197,7 +198,7 @@ exports.getProfile = async (req, res) => {
         const result = await authService.getProfile(req.user.id);
         res.json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -211,7 +212,7 @@ exports.getTelegramLink = async (req, res) => {
         const result = await authService.generateTelegramLink(req.user.id);
         res.json(result);
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };
 
@@ -219,11 +220,52 @@ exports.createAppeal = async (req, res) => {
     try {
         const { email, title, message } = req.body;
         const result = await adminService.createLandlordTicket(email, title, message);
-        res.status(201).json({
-            message: "Đã gửi khiếu nại tài khoản thành công! Ban quản trị sẽ sớm xem xét và phản hồi qua email.",
-            ticket: result
+        res.status(201).json({ message: result.message });
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
+/**
+ * Hủy yêu cầu nâng cấp gói cước đang ở trạng thái pending của chính chủ nhà (T2.12/T3.7).
+ */
+exports.cancelUpgradeRequest = async (req, res) => {
+    try {
+        const requestId = req.params?.id || req.body?.id;
+        const where = { landlordId: req.user.id, status: 'pending' };
+        if (requestId) {
+            where.id = Number(requestId);
+        }
+
+        const upgradeRequest = await PlanUpgradeRequest.findOne({
+            where,
+            order: [['createdAt', 'DESC']]
+        });
+
+        if (!upgradeRequest) {
+            return res.status(404).json({ message: 'Không tìm thấy yêu cầu nâng cấp đang chờ xử lý' });
+        }
+
+        upgradeRequest.status = 'cancelled';
+        if (typeof upgradeRequest.save === 'function') {
+            await upgradeRequest.save();
+        } else {
+            await PlanUpgradeRequest.update(
+                { status: 'cancelled' },
+                { where: { id: upgradeRequest.id } }
+            );
+        }
+
+        return res.status(200).json({
+            message: 'Đã hủy yêu cầu nâng cấp gói dịch vụ thành công',
+            request: {
+                id: upgradeRequest.id,
+                planName: upgradeRequest.planName,
+                billingCycle: upgradeRequest.billingCycle,
+                status: upgradeRequest.status
+            }
         });
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };

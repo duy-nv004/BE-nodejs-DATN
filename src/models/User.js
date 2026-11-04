@@ -25,10 +25,15 @@ const User = sequelize.define('User', {
     },
     plan: { type: DataTypes.ENUM('free', 'basic', 'pro'), defaultValue: 'free' },
     planExpiresAt: { type: DataTypes.DATEONLY, allowNull: true },
+    billingCycle: { type: DataTypes.ENUM('monthly', 'annual'), allowNull: true },
+    planSource: { type: DataTypes.ENUM('sepay', 'admin'), allowNull: true },
+    aiUseCountThisMonth: { type: DataTypes.INTEGER, defaultValue: 0 },
+    lastAiUseMonth: { type: DataTypes.STRING, allowNull: true },
     ownerId: { type: DataTypes.INTEGER, allowNull: true }, // Lưu ID của Landlord tạo ra Tenant này
     telegramChatId: {
         type: DataTypes.STRING,
         allowNull: true,
+        unique: true,
     },
     // Token ngắn hạn cho deep-link /start <token> của Telegram Bot.
     // Không dùng thẳng user.id: ai cũng gửi được /start <id> tới bot và như vậy
@@ -38,13 +43,29 @@ const User = sequelize.define('User', {
     cccd: { type: DataTypes.STRING, allowNull: true },
     dob: { type: DataTypes.STRING, allowNull: true },
     hometown: { type: DataTypes.TEXT, allowNull: true },
-    status: { type: DataTypes.ENUM('active', 'locked'), defaultValue: 'active' }
+    status: { type: DataTypes.ENUM('active', 'locked'), defaultValue: 'active' },
+    // Lý do admin khóa tài khoản (A2), hiển thị khi đăng nhập bị chặn
+    lockReason: { type: DataTypes.STRING(500), allowNull: true },
+    // Tăng khi đổi/reset mật khẩu; token mang version cũ bị protect từ chối (thu hồi phiên)
+    tokenVersion: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    // Tài khoản nhận tiền phòng của chủ nhà (I2). Null = dùng tài khoản hệ thống.
+    bankId: { type: DataTypes.STRING(20), allowNull: true },
+    bankAccount: { type: DataTypes.STRING(30), allowNull: true },
+    bankAccountName: { type: DataTypes.STRING(100), allowNull: true }
 }, {
     tableName: 'Users',
     hooks: {
         beforeCreate: async (user) => {
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(user.password, salt);
+            if (user.password && !user.password.startsWith('$2')) {
+                const salt = await bcrypt.genSalt(10);
+                user.password = await bcrypt.hash(user.password, salt);
+            }
+        },
+        beforeUpdate: async (user) => {
+            if (user.changed('password') && user.password && !user.password.startsWith('$2')) {
+                const salt = await bcrypt.genSalt(10);
+                user.password = await bcrypt.hash(user.password, salt);
+            }
         }
     }
 });

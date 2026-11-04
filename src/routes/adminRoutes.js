@@ -15,8 +15,10 @@ router.put('/landlords/:id/status', adminController.updateLandlordStatus);
 router.get('/plans', adminController.getPlans);
 router.put('/plans/:id', adminController.updatePlan);
 
-// Nhật ký hoạt động
+// Nhật ký hoạt động & đối soát SePay / yêu cầu nâng cấp gói
 router.get('/logs', adminController.getAdminLogs);
+router.get('/sepay-events', adminController.getSePayEvents);
+router.get('/upgrade-requests', adminController.getUpgradeRequests);
 
 // Quản lý ticket khiếu nại
 router.get('/tickets', adminController.getTickets);

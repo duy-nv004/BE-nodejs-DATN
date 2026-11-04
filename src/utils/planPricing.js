@@ -1,8 +1,6 @@
 /**
- * Quy đổi giá gói cước từ USD (lưu trong bảng Plans) sang VND để tạo mã QR SePay.
- * Tỷ giá này phải khớp với hàm formatPriceVND ở Frontend (Plans.jsx).
+ * Tiện ích giá gói cước. Bảng Plans lưu giá bằng VND.
  */
-const VND_PER_USD = 25000;
 
 const ANNUAL_TOKENS = ['annual', 'year', 'yearly', 'nam'];
 
@@ -22,8 +20,28 @@ const cycleDays = (billingCycle) => (isAnnualCycle(billingCycle) ? 365 : 30);
  * @param {string} billingCycle
  */
 const planPriceVnd = (plan, billingCycle) => {
-    const usdPrice = isAnnualCycle(billingCycle) ? plan.annualPrice : plan.price;
-    return Math.round(parseFloat(usdPrice || 0) * VND_PER_USD);
+    const price = isAnnualCycle(billingCycle) ? plan.annualPrice : plan.price;
+    return Math.round(parseFloat(price || 0));
+};
+
+/**
+ * Chuyển một lần giá gói cũ lưu USD sang VND (x25000, làm tròn 1000đ).
+ * Chỉ đổi khi 0 < price < 1000 nên chạy lại nhiều lần vẫn an toàn.
+ * @param {object} Plan - model Plan
+ * @returns {Promise<string[]>} tên các gói đã chuyển
+ */
+const migrateUsdPlanPrices = async (Plan) => {
+    const toVnd = (usd) => Math.round(parseFloat(usd || 0) * 25) * 1000;
+    const converted = [];
+    for (const p of await Plan.findAll()) {
+        const price = parseFloat(p.price);
+        if (p.name === 'free' || !(price > 0 && price < 1000)) continue;
+        p.price = toVnd(p.price);
+        p.annualPrice = toVnd(p.annualPrice);
+        await p.save();
+        converted.push(p.name);
+    }
+    return converted;
 };
 
 /**
@@ -34,10 +52,10 @@ const buildTransferCode = (landlordId, planName, billingCycle) =>
     `PLAN ${landlordId} ${String(planName).toUpperCase()}${isAnnualCycle(billingCycle) ? ' YEAR' : ''}`;
 
 module.exports = {
-    VND_PER_USD,
     isAnnualCycle,
     normalizeCycle,
     cycleDays,
     planPriceVnd,
-    buildTransferCode
+    buildTransferCode,
+    migrateUsdPlanPrices
 };

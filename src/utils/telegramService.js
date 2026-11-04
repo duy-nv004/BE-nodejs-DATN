@@ -9,7 +9,7 @@ exports.sendInvoiceToTelegram = async (chatId, data) => {
     }
 
     const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendPhoto`;
-    
+
     // Định dạng số tiền sang dạng VNĐ (ví dụ: 4,700,000)
     const formatMoney = (amount) => Number(amount).toLocaleString('vi-VN');
 
@@ -34,10 +34,34 @@ exports.sendInvoiceToTelegram = async (chatId, data) => {
       caption: message,
       parse_mode: "Markdown",
     });
-    
+
     console.log(`✅ Đã gửi Telegram tới ChatID: ${chatId}`);
   } catch (error) {
     // In chi tiết lỗi từ Telegram nếu có (ví dụ: sai chat_id)
+    if (error.response) {
+        console.error("Lỗi từ Telegram API:", error.response.data.description);
+    } else {
+        console.error("Lỗi kết nối Telegram:", error.message);
+    }
+  }
+};
+
+// Gửi tin nhắn text đơn giản tới Telegram (dùng cho nhắc thanh toán quá hạn...)
+exports.sendTextToTelegram = async (chatId, text) => {
+  try {
+    if (!chatId || !text) {
+        console.error("Thiếu chatId hoặc nội dung để gửi Telegram");
+        return;
+    }
+    await axios.post(
+        `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+            chat_id: chatId,
+            text: text,
+            parse_mode: "Markdown"
+        }
+    );
+  } catch (error) {
     if (error.response) {
         console.error("Lỗi từ Telegram API:", error.response.data.description);
     } else {

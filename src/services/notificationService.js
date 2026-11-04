@@ -5,6 +5,15 @@ const Room = require('../models/Room');
 const Building = require('../models/Building');
 const Role = require('../models/Role');
 const { Op } = require('sequelize');
+const Invoice = require('../models/Invoice');
+const telegramService = require('../utils/telegramService');
+const { computeDueDate } = require('./invoiceService');
+const dayjs = require('dayjs');
+
+// Cache thời điểm kiểm tra sinh thông báo định kỳ theo từng userId (tối đa 1 lần / ngày)
+const lastCheckedByUser = new Map();
+const CHECK_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+exports._resetCheckCache = () => lastCheckedByUser.clear();
 
 exports.createNotification = async (userId, title, content, type = 'info', relatedId = null) => {
     return await Notification.create({
@@ -16,15 +25,42 @@ exports.createNotification = async (userId, title, content, type = 'info', relat
     });
 };
 
-exports.getNotifications = async (userId) => {
-    // 1. Tự động kiểm tra và sinh thông báo trước khi lấy danh sách
-    await this.checkAndGenerateNotifications(userId);
+exports.getNotifications = async (userId, query = {}) => {
+    // 1. Chỉ kiểm tra và sinh thông báo tối đa 1 lần mỗi ngày cho mỗi userId
+    const now = Date.now();
+    const lastChecked = lastCheckedByUser.get(userId);
+    if (!lastChecked || (now - lastChecked) >= CHECK_COOLDOWN_MS) {
+        lastCheckedByUser.set(userId, now);
+        await this.checkAndGenerateNotifications(userId);
+    }
 
-    // 2. Lấy danh sách thông báo
-    return await Notification.findAll({
-        where: { userId },
+    // 2. Lấy danh sách thông báo (hỗ trợ phân trang tùy chọn qua limit và before)
+    const where = { userId };
+    const hasPagination = query && (query.limit !== undefined || query.before !== undefined);
+
+    if (query && query.before !== undefined && query.before !== null && query.before !== '') {
+        const beforeVal = String(query.before).trim();
+        if (/^\d+$/.test(beforeVal)) {
+            where.id = { [Op.lt]: Number(beforeVal) };
+        } else {
+            const parsedDate = new Date(beforeVal);
+            if (!Number.isNaN(parsedDate.getTime())) {
+                where.createdAt = { [Op.lt]: parsedDate };
+            }
+        }
+    }
+
+    const findOptions = {
+        where,
         order: [['createdAt', 'DESC']]
-    });
+    };
+
+    if (hasPagination) {
+        const parsedLimit = parseInt(query.limit, 10);
+        findOptions.limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 100) : 20;
+    }
+
+    return await Notification.findAll(findOptions);
 };
 
 exports.markAsRead = async (userId, notificationId) => {
@@ -237,4 +273,61 @@ exports.checkAndGenerateNotifications = async (userId) => {
     } catch (err) {
         console.error("Lỗi tự động sinh thông báo:", err);
     }
+};
+
+// NHẮC HÓA ĐƠN QUÁ HẠN (I4) — job toàn hệ thống, chạy từ index.js mỗi giờ.
+// Trước đây chỉ sinh khi người dùng mở chuông thông báo và chỉ xét HĐ đầu tiên.
+// Nhắc cả khách của hóa đơn (invoice.tenantId) lẫn chủ nhà; mỗi người tối đa 1 lần / 3 ngày.
+exports.remindOverdueInvoices = async (now = new Date()) => {
+    const todayStr = dayjs(now).format('YYYY-MM-DD');
+    const invoices = await Invoice.findAll({
+        where: {
+            isPaid: false,
+            // dueDate null: hóa đơn cũ không có contractId nên backfill không điền được
+            [Op.or]: [{ dueDate: { [Op.lt]: todayStr } }, { dueDate: null }]
+        },
+        include: [{ model: Room, as: 'roomDetails', include: [{ model: Building, as: 'building' }] }]
+    });
+
+    let sent = 0;
+    for (const inv of invoices) {
+        const due = inv.dueDate || computeDueDate(inv.year, inv.month, null);
+        if (!(due < todayStr)) continue;
+
+        const roomNumber = inv.roomDetails?.roomNumber || 'N/A';
+        const amount = Number(inv.totalAmount).toLocaleString('vi-VN');
+        const recipients = [...new Set([inv.tenantId, inv.landlordId || inv.roomDetails?.building?.landlordId].filter(Boolean))];
+
+        for (const userId of recipients) {
+            const latestNotif = await Notification.findOne({
+                where: { userId, type: 'invoice_overdue', relatedId: inv.id },
+                order: [['createdAt', 'DESC']]
+            });
+            if (latestNotif && (now - new Date(latestNotif.createdAt)) / (1000 * 60 * 60 * 24) < 3) continue;
+
+            await exports.createNotification(userId, "Hóa đơn quá hạn",
+                `Hóa đơn tháng ${inv.month}/${inv.year} của phòng ${roomNumber} (${amount} VNĐ) chưa được thanh toán. `
+                + `Vui lòng thanh toán sớm để tránh gián đoạn dịch vụ.`,
+                'invoice_overdue', inv.id);
+            sent++;
+
+            try {
+                const user = await User.findByPk(userId);
+                if (user?.telegramChatId) {
+                    await telegramService.sendTextToTelegram(user.telegramChatId, `🔔 **NHẮC THANH TOÁN QUÁ HẠN**
+
+`
+                        + `💰 Hóa đơn tháng ${inv.month}/${inv.year}: ${amount} VNĐ
+`
+                        + `🏠 Phòng: ${roomNumber}
+
+`
+                        + `Hãy đăng nhập hệ thống để thanh toán ngay.`);
+                }
+            } catch (err) {
+                console.error("⚠️ Lỗi gửi Telegram nhắc quá hạn:", err.message);
+            }
+        }
+    }
+    return sent;
 };

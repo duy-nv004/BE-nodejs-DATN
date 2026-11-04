@@ -1,4 +1,5 @@
 const meterService = require('../services/meterService');
+const { sendError } = require('../utils/errors');
 
 exports.updateRoomReadings = async (req, res) => {
     try {
@@ -8,6 +9,6 @@ exports.updateRoomReadings = async (req, res) => {
             data: result
         });
     } catch (err) {
-        res.status(err.statusCode || 500).json({ message: err.message });
+        sendError(res, err);
     }
 };

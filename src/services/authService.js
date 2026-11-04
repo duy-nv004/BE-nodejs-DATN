@@ -7,8 +7,10 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { Op } = require('sequelize');
 const { createError } = require('../utils/errors');
+const { validateEmail, validatePhone, validatePassword } = require('../utils/validators');
 
-const signToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+// Dùng chung signToken của middleware để token luôn mang tokenVersion (thu hồi phiên)
+const { signToken } = require('../middleware/authMiddleware');
 
 /** Thời gian sống của link liên kết Telegram (phút) */
 const TELEGRAM_LINK_TTL_MINUTES = 15;
@@ -17,6 +19,8 @@ exports.registerLandlord = async ({ email, password, name }) => {
     if (!email || !password) {
         throw createError(400, 'Vui lòng nhập Email và Mật khẩu');
     }
+    email = validateEmail(email);
+    validatePassword(password);
 
     const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
@@ -29,9 +33,20 @@ exports.registerLandlord = async ({ email, password, name }) => {
     }
 
     const user = await User.create({ email, password, name: name || null, roleId: role.id });
+    // Cùng dạng payload với loginUser để Frontend lưu 'user' như khi đăng nhập
     return {
         message: "Đăng ký chủ nhà thành công",
-        token: signToken(user.id)
+        token: signToken(user),
+        id: user.id,
+        role: 'landlord',
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        plan: user.plan,
+        planExpiresAt: user.planExpiresAt,
+        cccd: user.cccd,
+        dob: user.dob,
+        hometown: user.hometown
     };
 };
 
@@ -80,7 +95,7 @@ exports.loginUser = async ({ identity, password }) => {
     }
 
     if (user.status === 'locked') {
-        throw createError(403, 'Tài khoản của bạn đã bị khóa bởi quản trị viên');
+        throw createError(403, `Tài khoản của bạn đã bị khóa bởi quản trị viên${user.lockReason ? `. Lý do: ${user.lockReason}` : ''}`);
     }
 
     await planService.syncExpiredPlan(user);
@@ -88,7 +103,7 @@ exports.loginUser = async ({ identity, password }) => {
     const roleName = user.roleData.name;
 
     return {
-        token: signToken(user.id),
+        token: signToken(user),
         id: user.id,
         role: roleName.toLowerCase(),
         name: user.name,
@@ -106,6 +121,8 @@ exports.createTenant = async (landlordId, { phone, password, name }) => {
     if (!phone || !password || !name) {
         throw createError(400, 'Vui lòng nhập đầy đủ thông tin cho người thuê');
     }
+    phone = validatePhone(phone);
+    validatePassword(password);
 
     const existingUser = await User.findOne({ where: { phone } });
     if (existingUser) {
@@ -135,6 +152,13 @@ exports.updateProfile = async (userId, { name, email, phone, cccd, dob, hometown
     const user = await User.findByPk(userId);
     if (!user) {
         throw createError(404, 'Người dùng không tồn tại');
+    }
+
+    if (email !== undefined && email !== null && email !== '') {
+        email = validateEmail(email);
+    }
+    if (phone !== undefined && phone !== null && phone !== '') {
+        phone = validatePhone(phone);
     }
 
     if (email && email !== user.email) {
@@ -177,6 +201,9 @@ exports.changePassword = async (userId, { currentPassword, newPassword }) => {
     if (!currentPassword || !newPassword) {
         throw createError(400, 'Vui lòng điền mật khẩu hiện tại và mật khẩu mới');
     }
+    if (String(newPassword).length < 6) {
+        throw createError(400, 'Mật khẩu mới phải có ít nhất 6 ký tự');
+    }
 
     const user = await User.findByPk(userId);
     if (!user) throw createError(404, 'Người dùng không tồn tại');
@@ -186,9 +213,14 @@ exports.changePassword = async (userId, { currentPassword, newPassword }) => {
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
+    // Tăng tokenVersion để mọi phiên đăng nhập cũ (kể cả máy bị lộ) hết hiệu lực
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    // Xóa luôn token liên kết Telegram đang chờ (T1.15)
+    user.telegramLinkToken = null;
+    user.telegramLinkTokenExpiresAt = null;
     await user.save();
 
-    return { message: 'Đổi mật khẩu thành công!' };
+    return { message: 'Đổi mật khẩu thành công!', token: signToken(user) };
 };
 
 exports.getProfile = async (userId) => {

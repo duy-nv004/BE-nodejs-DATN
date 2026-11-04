@@ -2,7 +2,7 @@ const notificationService = require('../services/notificationService');
 
 exports.getNotifications = async (req, res) => {
     try {
-        const notifications = await notificationService.getNotifications(req.user.id);
+        const notifications = await notificationService.getNotifications(req.user.id, req.query);
         res.json(notifications);
     } catch (err) {
         res.status(500).json({ message: err.message });

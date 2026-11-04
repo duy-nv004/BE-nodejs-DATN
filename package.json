@@ -1,11 +1,12 @@
 {
-  "name": "blog-api",
+  "name": "smart-rental-api",
   "version": "1.0.0",
+  "description": "Hệ thống Backend Quản lý Nhà trọ & Bất động sản Cho thuê Thông minh (DATN)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test \"test/*.test.js\""
   },
   "keywords": [],
   "author": "",

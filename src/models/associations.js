@@ -40,6 +40,7 @@ const setupAssociations = () => {
 
     Room.hasMany(Invoice, { foreignKey: 'roomId', as: 'invoices' });
     Invoice.belongsTo(Room, { foreignKey: 'roomId', as: 'roomDetails' });
+    Invoice.belongsTo(User, { foreignKey: 'tenantId', as: 'tenant' });
 
     // SupportRequest
     User.hasMany(SupportRequest, { foreignKey: 'tenantId', as: 'supportRequests' });
@@ -69,6 +70,22 @@ const setupAssociations = () => {
     const PlanUpgradeRequest = require('./PlanUpgradeRequest');
     User.hasMany(PlanUpgradeRequest, { foreignKey: 'landlordId', as: 'planUpgradeRequests' });
     PlanUpgradeRequest.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
+
+    // DepositRecord — theo dõi tiền cọc theo hợp đồng
+    const DepositRecord = require('./DepositRecord');
+    Contract.hasMany(DepositRecord, { foreignKey: 'contractId', as: 'deposits' });
+    DepositRecord.belongsTo(Contract, { foreignKey: 'contractId', as: 'contract' });
+
+    // ContractRequest — yêu cầu trả phòng / gia hạn của khách (C5)
+    const ContractRequest = require('./ContractRequest');
+    Contract.hasMany(ContractRequest, { foreignKey: 'contractId', as: 'requests' });
+    ContractRequest.belongsTo(Contract, { foreignKey: 'contractId', as: 'contract' });
+    ContractRequest.belongsTo(User, { foreignKey: 'tenantId', as: 'tenant' });
+
+    // ContractOccupant — người ở cùng & tạm trú (C6)
+    const ContractOccupant = require('./ContractOccupant');
+    Contract.hasMany(ContractOccupant, { foreignKey: 'contractId', as: 'occupants' });
+    ContractOccupant.belongsTo(Contract, { foreignKey: 'contractId', as: 'contract' });
 };
 
 module.exports = setupAssociations;

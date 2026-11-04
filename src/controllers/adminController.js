@@ -29,16 +29,16 @@ exports.getLandlords = asyncHandler(async (req, res) => {
 /** Cập nhật gói cước của một chủ nhà */
 exports.updateLandlordPlan = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { plan } = req.body;
-    const result = await adminService.updateLandlordPlan(id, plan, req.user.id);
+    const { plan, billingCycle } = req.body;
+    const result = await adminService.updateLandlordPlan(id, plan, req.user.id, billingCycle);
     res.status(200).json(result);
 });
 
 /** Khóa hoặc mở khóa tài khoản chủ nhà */
 exports.updateLandlordStatus = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
-    const result = await adminService.updateLandlordStatus(id, status, req.user.id);
+    const { status, reason, resetPassword } = req.body;
+    const result = await adminService.updateLandlordStatus(id, status, req.user.id, { reason, resetPassword: resetPassword === true });
     res.status(200).json(result);
 });
 
@@ -52,15 +52,27 @@ exports.getPlans = asyncHandler(async (req, res) => {
 
 /** Cập nhật giới hạn và giá của một gói dịch vụ */
 exports.updatePlan = asyncHandler(async (req, res) => {
-    const result = await adminService.updatePlan(req.params.id, req.body);
+    const result = await adminService.updatePlan(req.params.id, req.body, req.user.id);
     res.status(200).json(result);
 });
 
-// ─── Admin Logs ─────────────────────────────────────────────────────────────────
+// ─── Admin Logs & SePay Reconciliation ──────────────────────────────────────────
 
 /** Lấy nhật ký hoạt động hệ thống */
 exports.getAdminLogs = asyncHandler(async (req, res) => {
-    const result = await adminService.getAdminLogs();
+    const result = await adminService.getAdminLogs(req.query);
+    res.status(200).json(result);
+});
+
+/** Lấy danh sách sự kiện SePay để đối soát (T1.3) */
+exports.getSePayEvents = asyncHandler(async (req, res) => {
+    const result = await adminService.getSePayEvents(req.query);
+    res.status(200).json(result);
+});
+
+/** Lấy danh sách yêu cầu nâng cấp gói cước (T2.12) */
+exports.getUpgradeRequests = asyncHandler(async (req, res) => {
+    const result = await adminService.getUpgradeRequests(req.query);
     res.status(200).json(result);
 });
 
@@ -75,7 +87,7 @@ exports.getTickets = asyncHandler(async (req, res) => {
 /** Giải quyết ticket khiếu nại (resolved / rejected) */
 exports.resolveTicket = asyncHandler(async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
-    const result = await adminService.resolveLandlordTicket(id, status, req.user.id);
+    const { status, reason } = req.body;
+    const result = await adminService.resolveLandlordTicket(id, status, req.user.id, { reason });
     res.status(200).json(result);
 });
