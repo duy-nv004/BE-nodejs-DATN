@@ -228,7 +228,9 @@ describe('chat với đề xuất hành động (pendingAction)', () => {
 
     test('tenant không nhận tool spec (toolsForUser rỗng với tenant)', async () => {
         const { toolsForUser } = require('../src/services/chatTools');
-        assert.deepEqual(toolsForUser(tenantUser).map((t) => t.function.name), ['create_support_request']);
+        const tenantToolNames = toolsForUser(tenantUser).map((t) => t.function.name);
+        assert.ok(tenantToolNames.includes('create_support_request'));
+        assert.ok(tenantToolNames.includes('request_move_out'));
         assert.ok(toolsForUser(landlordUser).length >= 11);
     });
 });

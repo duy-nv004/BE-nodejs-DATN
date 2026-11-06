@@ -18,6 +18,8 @@ const DepositRecord = require("./src/models/DepositRecord");
 const ContractRequest = require("./src/models/ContractRequest");
 // Bắt buộc require để sequelize.sync() tạo bảng ContractOccupants (C6)
 const ContractOccupant = require("./src/models/ContractOccupant");
+// Bắt buộc require để sequelize.sync() tạo bảng RefreshTokens (quản lý phiên đơn thiết bị)
+const RefreshToken = require("./src/models/RefreshToken");
 
 // Route imports
 const authRoutes = require("./src/routes/authRoutes");
@@ -37,6 +39,7 @@ const supportRoutes = require("./src/routes/supportRoutes");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 
@@ -44,20 +47,19 @@ const app = express();
 // thuần JSON, không phục vụ HTML — CSP ở đây không có tác dụng và dễ gây nhiễu.
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// Giới hạn CORS theo biến môi trường. Mặc định `cors()` không tham số nghĩa là
-// cho phép MỌI origin gọi kèm cookie/token. Đặt CORS_ORIGINS trong .env khi deploy.
+// Giới hạn CORS theo biến môi trường. Cho phép credentials (cookies) an toàn.
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map(o => o.trim())
     .filter(Boolean);
 
-app.use(cors(
-    allowedOrigins.length > 0
-        ? { origin: allowedOrigins, credentials: true }
-        : undefined // chưa cấu hình -> giữ hành vi cũ (mở) để không chặn môi trường dev
-));
+app.use(cors({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    credentials: true
+}));
 
 app.use(express.json());
+app.use(cookieParser());
 
 // Chống dò mật khẩu: giới hạn số lần đăng nhập sai từ một địa chỉ IP.
 const loginLimiter = rateLimit({

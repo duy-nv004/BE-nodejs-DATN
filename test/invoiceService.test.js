@@ -352,20 +352,12 @@ describe('generateInvoice: QR luôn dùng tài khoản hệ thống đã liên k
         stub(User, 'findByPk', async () => landlord);
     };
 
-    test('chủ nhà còn tài khoản cũ trong DB thì QR vẫn dùng tài khoản hệ thống', async () => {
-        setupQr({ id: 1, bankId: 'VCB', bankAccount: '123456789' });
+    test('QR hóa đơn luôn dùng tài khoản hệ thống (env) qua VietQR', async () => {
+        setupQr({ id: 1 });
         const { systemBank } = require('../src/utils/bank');
         const res = await service.generateInvoice({ roomId: 5, month: 2, year: 2027 }, 1);
         assert.ok(res.invoice.qrCode.includes(`acc=${systemBank().bankAccount}&`));
-        assert.doesNotMatch(res.invoice.qrCode, /acc=123456789&/);
         assert.match(res.invoice.qrCode, /amount=3000000&/);
-    });
-
-    test('chủ nhà chưa cấu hình thì dùng tài khoản hệ thống (env)', async () => {
-        setupQr({ id: 1, bankId: null, bankAccount: null });
-        const { systemBank } = require('../src/utils/bank');
-        const res = await service.generateInvoice({ roomId: 5, month: 2, year: 2027 }, 1);
-        assert.ok(res.invoice.qrCode.includes(`acc=${systemBank().bankAccount}&`));
     });
 });
 

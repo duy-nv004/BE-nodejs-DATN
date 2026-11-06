@@ -13,6 +13,8 @@ const appealLimiter = rateLimit({
 const {
   registerLandlord,
   login,
+  refreshToken,
+  logout,
   createTenant,
   updateProfile,
   changePassword,
@@ -27,6 +29,8 @@ const { protect, authorize } = require('../middleware/authMiddleware');
 
 router.post('/register', registerLandlord);
 router.post('/login', login);
+router.post('/refresh-token', refreshToken);
+router.post('/logout', logout);
 router.post('/appeal', appealLimiter, createAppeal);
 router.post('/create-tenant', protect, authorize('landlord'), createTenant);
 

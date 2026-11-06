@@ -93,8 +93,10 @@ describe('tool mở rộng', () => {
             assert.ok(landlordTools.includes(expected), `thiếu tool ${expected}`);
         }
         const tenantTools = toolsForUser(tenant).map((t) => t.function.name);
-        assert.deepEqual(tenantTools, ['create_support_request']);
-        assert.deepEqual(toolsForUser({ id: 1, roleData: { name: 'admin' } }), []);
+        assert.ok(tenantTools.includes('create_support_request'));
+        assert.ok(tenantTools.includes('request_move_out'));
+        const adminTools = toolsForUser({ id: 1, roleData: { name: 'admin' } }).map(t => t.function.name);
+        assert.ok(adminTools.includes('get_platform_metrics'));
     });
 
     test('create_building: cần name + address trong spec và khi chạy', async () => {

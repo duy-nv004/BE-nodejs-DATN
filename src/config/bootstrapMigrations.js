@@ -37,9 +37,6 @@ const runBootstrapMigrations = async (sequelize) => {
     planSource: { type: DT.ENUM('sepay', 'admin'), allowNull: true },
     telegramLinkToken: { type: DT.STRING, allowNull: true },
     telegramLinkTokenExpiresAt: { type: DT.DATE, allowNull: true },
-    bankId: { type: DT.STRING(20), allowNull: true },
-    bankAccount: { type: DT.STRING(30), allowNull: true },
-    bankAccountName: { type: DT.STRING(100), allowNull: true },
     lockReason: { type: DT.STRING(500), allowNull: true },
     tokenVersion: { type: DT.INTEGER, allowNull: false, defaultValue: 0 },
   };
@@ -47,6 +44,18 @@ const runBootstrapMigrations = async (sequelize) => {
     if (!tableDefinition[col]) {
       await queryInterface.addColumn('Users', col, def);
       console.log(`📁 Thêm cột ${col} vào bảng Users thành công!`);
+    }
+  }
+
+  // Tự động dọn dẹp các cột cấu hình ngân hàng cũ của chủ trọ nếu còn tồn tại
+  for (const oldCol of ['bankId', 'bankAccount', 'bankAccountName']) {
+    if (tableDefinition[oldCol]) {
+      try {
+        await queryInterface.removeColumn('Users', oldCol);
+        console.log(`🗑️ Đã xóa cột cũ ${oldCol} khỏi bảng Users`);
+      } catch (e) {
+        // bỏ qua nếu đã xóa
+      }
     }
   }
 

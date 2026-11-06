@@ -4,6 +4,9 @@ const meterService = require("./meterService");
 const invoiceService = require("./invoiceService");
 const contractService = require("./contractService");
 const supportService = require("./supportService");
+const adminService = require("./adminService");
+const tenantService = require("./tenantService");
+const notificationService = require("./notificationService");
 
 /**
  * Tool registry cho chatbot function calling.
@@ -374,6 +377,383 @@ const CHAT_TOOLS = {
             const severity = ["low", "medium", "high"].includes(params.severity) ? params.severity : "medium";
             const result = await service.createTenantRequest(user.id, { description: params.description, severity, ...opt(params, ["roomId"]) });
             return { request: result.supportRequest, message: result.message || "Đã gửi báo sự cố." };
+        }
+    },
+
+    // ─── TÁC VỤ CHO NGƯỜI THUÊ (tenant) ───
+    request_move_out: {
+        allowedRoles: ["tenant"],
+        spec: {
+            type: "function",
+            function: {
+                name: "request_move_out",
+                description: "Gửi yêu cầu báo trả phòng cho hợp đồng đang thuê (dành cho người thuê).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        contractId: { type: "integer", description: "ID hợp đồng (tùy chọn nếu chỉ có 1 hợp đồng)" },
+                        desiredDate: { type: "string", description: "Ngày mong muốn trả phòng (YYYY-MM-DD)" },
+                        note: { type: "string", description: "Lý do hoặc ghi chú trả phòng" }
+                    }
+                }
+            }
+        },
+        async run(user, params, { contractService: service = contractService } = {}) {
+            let contractId = params?.contractId;
+            if (!contractId) {
+                const Contract = require("../models/Contract");
+                const active = await Contract.findOne({ where: { tenantId: user.id, status: "active" } });
+                if (!active) throw createError(404, "Không tìm thấy hợp đồng đang hiệu lực của bạn");
+                contractId = active.id;
+            }
+            const result = await service.createTenantRequest(user.id, contractId, {
+                type: "move_out",
+                ...opt(params, ["desiredDate", "note"])
+            });
+            return { message: result.message || "Đã gửi yêu cầu trả phòng tới chủ nhà.", request: result.request };
+        }
+    },
+
+    request_renewal: {
+        allowedRoles: ["tenant"],
+        spec: {
+            type: "function",
+            function: {
+                name: "request_renewal",
+                description: "Gửi đề nghị gia hạn hợp đồng thuê phòng (dành cho người thuê).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        contractId: { type: "integer", description: "ID hợp đồng" },
+                        desiredDate: { type: "string", description: "Ngày kết thúc mới mong muốn (YYYY-MM-DD)" },
+                        note: { type: "string", description: "Ghi chú gia hạn" }
+                    }
+                }
+            }
+        },
+        async run(user, params, { contractService: service = contractService } = {}) {
+            let contractId = params?.contractId;
+            if (!contractId) {
+                const Contract = require("../models/Contract");
+                const active = await Contract.findOne({ where: { tenantId: user.id, status: "active" } });
+                if (!active) throw createError(404, "Không tìm thấy hợp đồng đang hiệu lực của bạn");
+                contractId = active.id;
+            }
+            const result = await service.createTenantRequest(user.id, contractId, {
+                type: "renewal",
+                ...opt(params, ["desiredDate", "note"])
+            });
+            return { message: result.message || "Đã gửi đề nghị gia hạn hợp đồng tới chủ nhà.", request: result.request };
+        }
+    },
+
+    get_invoice_payment_qr: {
+        allowedRoles: ["tenant"],
+        spec: {
+            type: "function",
+            function: {
+                name: "get_invoice_payment_qr",
+                description: "Tra cứu hóa đơn chưa thanh toán và lấy mã QR VietQR để thanh toán tiền phòng nhanh (dành cho người thuê).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        invoiceId: { type: "integer", description: "ID hóa đơn cụ thể (nếu có)" }
+                    }
+                }
+            }
+        },
+        async run(user, params, { tenantService: service = tenantService } = {}) {
+            const invoices = await service.getInvoices(user.id);
+            const unpaid = (invoices || []).filter((i) => !i.isPaid);
+            if (unpaid.length === 0) {
+                return {
+                    unpaidCount: 0,
+                    message: "Tuyệt vời! Bạn hiện không có hóa đơn nào chưa thanh toán."
+                };
+            }
+            const target = (params?.invoiceId && unpaid.find((i) => i.id === Number(params.invoiceId))) || unpaid[0];
+            return {
+                unpaidCount: unpaid.length,
+                latestInvoice: {
+                    id: target.id,
+                    month: target.month,
+                    year: target.year,
+                    totalAmount: Number(target.totalAmount || 0),
+                    qrCodeUrl: target.qrCodeUrl,
+                    roomNumber: target.roomDetails?.roomNumber || "N/A"
+                },
+                message: `Hóa đơn tháng ${target.month}/${target.year} của bạn là ${Number(target.totalAmount || 0).toLocaleString("vi-VN")} VNĐ. Quét mã QR VietQR để thanh toán tự động.`
+            };
+        }
+    },
+
+    add_roommate: {
+        allowedRoles: ["tenant"],
+        spec: {
+            type: "function",
+            function: {
+                name: "add_roommate",
+                description: "Khai báo thêm người ở cùng phòng trong hợp đồng thuê để chủ nhà đăng ký tạm trú (dành cho người thuê).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        contractId: { type: "integer", description: "ID hợp đồng" },
+                        fullName: { type: "string", description: "Họ và tên người ở cùng" },
+                        phone: { type: "string", description: "Số điện thoại" },
+                        relation: { type: "string", description: "Quan hệ (bạn bè, người thân, đồng nghiệp...)" },
+                        note: { type: "string", description: "Ghi chú thêm" }
+                    },
+                    required: ["fullName"]
+                }
+            }
+        },
+        async run(user, params, { contractService: service = contractService } = {}) {
+            req(params, ["fullName"]);
+            let contractId = params?.contractId;
+            if (!contractId) {
+                const Contract = require("../models/Contract");
+                const active = await Contract.findOne({ where: { tenantId: user.id, status: "active" } });
+                if (!active) throw createError(404, "Không tìm thấy hợp đồng đang hiệu lực của bạn");
+                contractId = active.id;
+            }
+            const result = await service.addOccupant(user, contractId, opt(params, ["fullName", "phone", "relation", "note"]));
+            return { message: result.message || "Đã thêm người ở cùng thành công.", occupant: result.occupant };
+        }
+    },
+
+    // ─── TÁC VỤ NÂNG CAO CHO CHỦ NHÀ (landlord) ───
+    renew_contract_quick: {
+        allowedRoles: ["landlord"],
+        spec: {
+            type: "function",
+            function: {
+                name: "renew_contract_quick",
+                description: "Tạo hợp đồng gia hạn nối tiếp cho hợp đồng đang hoạt động (dành cho chủ nhà).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        contractId: { type: "integer", description: "ID hợp đồng hiện tại" },
+                        startDate: { type: "string", description: "Ngày bắt đầu gia hạn (YYYY-MM-DD)" },
+                        endDate: { type: "string", description: "Ngày kết thúc gia hạn (YYYY-MM-DD)" },
+                        rentPrice: { type: "number", description: "Giá thuê mới (VND/tháng, bỏ trống = giữ giá cũ)" }
+                    },
+                    required: ["contractId", "startDate", "endDate"]
+                }
+            }
+        },
+        async run(user, params, { contractService: service = contractService } = {}) {
+            req(params, ["contractId", "startDate", "endDate"]);
+            const result = await service.renewContract(user.id, params.contractId, opt(params, ["startDate", "endDate", "rentPrice", "numTenants", "firstLastMonthPolicy"]));
+            return { message: result.message || "Đã tạo hợp đồng gia hạn thành công. Chờ khách thuê ký xác nhận.", contract: result.contract };
+        }
+    },
+
+    send_overdue_reminders: {
+        allowedRoles: ["landlord"],
+        spec: {
+            type: "function",
+            function: {
+                name: "send_overdue_reminders",
+                description: "Gửi thông báo nhắc nợ tới tất cả các phòng có hóa đơn chưa thanh toán hoặc quá hạn.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        buildingId: { type: "integer", description: "Lọc theo tòa nhà cụ thể (tùy chọn)" }
+                    }
+                }
+            }
+        },
+        async run(user, params, { invoiceService: invSvc = invoiceService, notificationService: notiSvc = notificationService } = {}) {
+            const invoices = await invSvc.listInvoices(user.id, { status: "unpaid", ...opt(params, ["buildingId"]) });
+            const unpaid = (invoices || []).filter((i) => !i.isPaid && i.tenantId);
+            if (unpaid.length === 0) {
+                return { count: 0, message: "Không có hóa đơn nợ nào cần nhắc nhở." };
+            }
+            let sentCount = 0;
+            const notifiedTenants = new Set();
+            for (const inv of unpaid) {
+                if (notifiedTenants.has(inv.tenantId)) continue;
+                notifiedTenants.add(inv.tenantId);
+                const roomNum = inv.roomDetails?.roomNumber || "phòng trọ";
+                await notiSvc.createNotification(
+                    inv.tenantId,
+                    "Nhắc nhở thanh toán tiền phòng",
+                    `Bạn có hóa đơn tháng ${inv.month}/${inv.year} của ${roomNum} chưa thanh toán (${Number(inv.totalAmount || 0).toLocaleString("vi-VN")} đ). Vui lòng thanh toán sớm.`,
+                    "invoice",
+                    inv.id
+                );
+                sentCount++;
+            }
+            return { count: sentCount, message: `Đã gửi thông báo nhắc nợ thành công tới ${sentCount} khách thuê.` };
+        }
+    },
+
+    get_revenue_stats: {
+        allowedRoles: ["landlord"],
+        spec: {
+            type: "function",
+            function: {
+                name: "get_revenue_stats",
+                description: "Thống kê doanh thu dự kiến, tiền đã thu, tiền cấn trừ cọc, số tiền còn nợ và số phòng chưa đóng tiền theo tháng cụ thể hoặc theo cả năm (dành cho chủ nhà).",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        year: {
+                            type: "integer",
+                            description: "Năm cần thống kê (ví dụ: 2026). Nếu bỏ trống sẽ lấy năm hiện tại."
+                        },
+                        month: {
+                            type: "string",
+                            description: "Tháng cần thống kê (từ '1' đến '12', hoặc 'all' để thống kê cả năm). Bỏ trống = 'all'."
+                        }
+                    }
+                }
+            }
+        },
+        async run(user, params, { invoiceService: invSvc = invoiceService } = {}) {
+            const currentYear = new Date().getFullYear();
+            const year = params?.year ? Number(params.year) : currentYear;
+            const monthRaw = params?.month != null && String(params.month).trim() !== "" ? String(params.month).trim().toLowerCase() : "all";
+            const month = monthRaw === "all" || monthRaw === "cả năm" ? "all" : String(Number(monthRaw) || monthRaw);
+
+            const result = await invSvc.getRevenueStats(user.id, { month, year });
+            const stats = result?.stats || {
+                totalExpected: 0,
+                totalCollected: 0,
+                cashCollected: 0,
+                depositOffset: 0,
+                unpaidAmount: 0,
+                unpaidRooms: 0,
+                invoiceCount: 0
+            };
+
+            const periodLabel = month === "all" ? `Năm ${year}` : `Tháng ${month}/${year}`;
+            const collectionRate = stats.totalExpected > 0
+                ? `${Math.round((stats.totalCollected / stats.totalExpected) * 1000) / 10}%`
+                : "100%";
+
+            const formatVND = (v) => Number(v || 0).toLocaleString("vi-VN") + " VNĐ";
+
+            return {
+                period: periodLabel,
+                stats: {
+                    ...stats,
+                    collectionRate,
+                    totalExpectedFormatted: formatVND(stats.totalExpected),
+                    totalCollectedFormatted: formatVND(stats.totalCollected),
+                    cashCollectedFormatted: formatVND(stats.cashCollected),
+                    depositOffsetFormatted: formatVND(stats.depositOffset),
+                    unpaidAmountFormatted: formatVND(stats.unpaidAmount)
+                },
+                message: `Báo cáo doanh thu ${periodLabel}: Dự kiến ${formatVND(stats.totalExpected)}, thực thu ${formatVND(stats.totalCollected)} (${collectionRate}), còn nợ ${formatVND(stats.unpaidAmount)} (${stats.unpaidRooms} phòng chưa đóng).`
+            };
+        }
+    },
+
+    // ─── TÁC VỤ QUẢN TRỊ VIÊN (admin) ───
+    get_platform_metrics: {
+        allowedRoles: ["admin"],
+        spec: {
+            type: "function",
+            function: {
+                name: "get_platform_metrics",
+                description: "Xem báo cáo tổng quan chỉ số nền tảng SaaS (doanh thu thực thu, MRR, tổng số chủ nhà, phân bố gói cước Free/Basic/Pro).",
+                parameters: {
+                    type: "object",
+                    properties: {}
+                }
+            }
+        },
+        async run(user, params, { adminService: service = adminService } = {}) {
+            const stats = await service.getSystemStats();
+            return {
+                stats,
+                message: `Chỉ số nền tảng: Tổng số chủ nhà: ${stats.totalLandlords || 0}, Doanh thu thực thu: ${Number(stats.totalRevenue || 0).toLocaleString("vi-VN")} VNĐ, MRR: ${Number(stats.mrr || 0).toLocaleString("vi-VN")} VNĐ.`
+            };
+        }
+    },
+
+    query_failed_sepay: {
+        allowedRoles: ["admin"],
+        spec: {
+            type: "function",
+            function: {
+                name: "query_failed_sepay",
+                description: "Tra cứu các giao dịch SePay bị từ chối hoặc lỗi gần đây để rà soát sự cố.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        limit: { type: "integer", description: "Số lượng giao dịch cần lấy, mặc định 5" }
+                    }
+                }
+            }
+        },
+        async run(user, params, { adminService: service = adminService } = {}) {
+            const limit = params?.limit && Number.isInteger(Number(params.limit)) ? Number(params.limit) : 5;
+            const events = await service.getSePayEvents({ status: "REJECTED", pageSize: limit });
+            const list = events?.rows || [];
+            return {
+                count: events?.count || list.length,
+                events: list.map((e) => ({ id: e.id, content: e.content, transferAmount: e.transferAmount, errorReason: e.errorReason })),
+                message: list.length > 0 ? `Tìm thấy ${list.length} giao dịch SePay bị từ chối gần đây.` : "Không có giao dịch SePay bị lỗi nào."
+            };
+        }
+    },
+
+    resolve_landlord_ticket: {
+        allowedRoles: ["admin"],
+        spec: {
+            type: "function",
+            function: {
+                name: "resolve_landlord_ticket",
+                description: "Duyệt hoặc từ chối phiếu khiếu nại mở khóa tài khoản của chủ nhà.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        ticketId: { type: "integer", description: "ID phiếu khiếu nại" },
+                        status: { type: "string", enum: ["resolved", "rejected"], description: "resolved (duyệt mở khóa) hoặc rejected (từ chối)" },
+                        adminResponse: { type: "string", description: "Lý do hoặc phản hồi của Admin" },
+                        resetPassword: { type: "boolean", description: "Có đặt lại mật khẩu ngẫu nhiên và gửi email không (mặc định false)" }
+                    },
+                    required: ["ticketId", "status"]
+                }
+            }
+        },
+        async run(user, params, { adminService: service = adminService } = {}) {
+            req(params, ["ticketId", "status"]);
+            if (!["resolved", "rejected"].includes(params.status)) {
+                throw createError(400, "Trạng thái khiếu nại phải là resolved hoặc rejected");
+            }
+            const result = await service.resolveLandlordTicket(user.id, params.ticketId, opt(params, ["status", "adminResponse", "resetPassword"]));
+            return { message: result.message || "Đã xử lý phiếu khiếu nại thành công." };
+        }
+    },
+
+    update_landlord_status: {
+        allowedRoles: ["admin"],
+        spec: {
+            type: "function",
+            function: {
+                name: "update_landlord_status",
+                description: "Khóa hoặc mở khóa tài khoản chủ nhà vi phạm kèm lý do giải thích.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        landlordId: { type: "integer", description: "ID chủ nhà" },
+                        status: { type: "string", enum: ["locked", "active"], description: "Trạng thái mới: locked (khóa) hoặc active (mở khóa)" },
+                        lockReason: { type: "string", description: "Lý do khóa tài khoản (bắt buộc khi khóa, tối thiểu 5 ký tự)" }
+                    },
+                    required: ["landlordId", "status"]
+                }
+            }
+        },
+        async run(user, params, { adminService: service = adminService } = {}) {
+            req(params, ["landlordId", "status"]);
+            if (!["locked", "active"].includes(params.status)) {
+                throw createError(400, "Trạng thái tài khoản phải là locked hoặc active");
+            }
+            const result = await service.updateLandlordStatus(user.id, params.landlordId, opt(params, ["status", "lockReason", "resetPassword"]));
+            return { message: result.message || `Đã cập nhật trạng thái chủ nhà ID ${params.landlordId} thành công.` };
         }
     }
 };

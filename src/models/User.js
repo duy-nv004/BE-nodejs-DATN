@@ -47,11 +47,7 @@ const User = sequelize.define('User', {
     // Lý do admin khóa tài khoản (A2), hiển thị khi đăng nhập bị chặn
     lockReason: { type: DataTypes.STRING(500), allowNull: true },
     // Tăng khi đổi/reset mật khẩu; token mang version cũ bị protect từ chối (thu hồi phiên)
-    tokenVersion: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-    // Tài khoản nhận tiền phòng của chủ nhà (I2). Null = dùng tài khoản hệ thống.
-    bankId: { type: DataTypes.STRING(20), allowNull: true },
-    bankAccount: { type: DataTypes.STRING(30), allowNull: true },
-    bankAccountName: { type: DataTypes.STRING(100), allowNull: true }
+    tokenVersion: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 }
 }, {
     tableName: 'Users',
     hooks: {

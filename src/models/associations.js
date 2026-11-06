@@ -86,6 +86,16 @@ const setupAssociations = () => {
     const ContractOccupant = require('./ContractOccupant');
     Contract.hasMany(ContractOccupant, { foreignKey: 'contractId', as: 'occupants' });
     ContractOccupant.belongsTo(Contract, { foreignKey: 'contractId', as: 'contract' });
+
+    // RefreshToken — quản lý phiên đăng nhập đơn thiết bị
+    const RefreshToken = require('./RefreshToken');
+    User.hasMany(RefreshToken, { foreignKey: 'userId', as: 'refreshTokens' });
+    RefreshToken.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+    // SePayEvent — nhật ký đối soát webhook thanh toán
+    const SePayEvent = require('./SePayEvent');
+    User.hasMany(SePayEvent, { foreignKey: 'landlordId', as: 'sepayEvents' });
+    SePayEvent.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
 };
 
 module.exports = setupAssociations;

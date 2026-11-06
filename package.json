@@ -1,7 +1,7 @@
 {
   "name": "smart-rental-api",
   "version": "1.0.0",
-  "description": "Hệ thống Backend Quản lý Nhà trọ & Bất động sản Cho thuê Thông minh (DATN)",
+  "description": "",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -11,11 +11,11 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dayjs": "^1.11.20",
     "dotenv": "^17.2.3",

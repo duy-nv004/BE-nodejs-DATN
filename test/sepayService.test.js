@@ -25,7 +25,7 @@ const stub = (obj, key, fn) => {
 afterEach(() => { while (restores.length) restores.pop()(); });
 
 describe('processWebhookPayload: hóa đơn tiền phòng (I2, T1.2, T1.3, T2.2)', () => {
-    const setup = ({ owner = { id: 1, bankAccount: '111222333' }, invoiceOver = {} } = {}) => {
+    const setup = ({ owner = { id: 1 }, invoiceOver = {} } = {}) => {
         const calls = { paid: [], logs: [], notes: [], events: [] };
         stub(sequelize, 'transaction', async (fn) => fn({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: (cb) => cb() }));
         stub(SePayEvent, 'create', async (row) => {
@@ -75,8 +75,8 @@ describe('processWebhookPayload: hóa đơn tiền phòng (I2, T1.2, T1.3, T2.2)
         assert.equal(calls.paid.length, 0);
     });
 
-    test('chủ nhà chưa cấu hình tài khoản thì vẫn gạch nợ (tiền về tài khoản hệ thống)', async () => {
-        const calls = setup({ owner: { id: 1, bankAccount: null } });
+    test('thanh toán hợp lệ thì gạch nợ (tiền về tài khoản hệ thống)', async () => {
+        const calls = setup({ owner: { id: 1 } });
         const res = await pay({ accountNumber: '999888777' });
         assert.equal(res.type, 'ROOM_INVOICE');
         assert.equal(calls.paid.length, 1);

@@ -8,9 +8,26 @@ const adminService = require('../services/adminService');
 const { isAnnualCycle, normalizeCycle, planPriceVnd, buildTransferCode } = require('../utils/planPricing');
 const { sendError } = require('../utils/errors');
 
+const COOKIE_OPTIONS = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    path: '/api/auth',
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 ngày
+};
+
 exports.registerLandlord = async (req, res) => {
     try {
-        const result = await authService.registerLandlord(req.body);
+        const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+        const result = await authService.registerLandlord({
+            ...req.body,
+            ip,
+            userAgent
+        });
+        if (result.refreshToken) {
+            res.cookie('refreshToken', result.refreshToken, COOKIE_OPTIONS);
+        }
         res.status(201).json(result);
     } catch (err) {
         sendError(res, err);
@@ -19,9 +36,50 @@ exports.registerLandlord = async (req, res) => {
 
 exports.login = async (req, res) => {
     try {
-        const result = await authService.loginUser(req.body);
+        const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+        const result = await authService.loginUser({
+            identity: req.body.identity,
+            password: req.body.password,
+            ip,
+            userAgent
+        });
+        if (result.refreshToken) {
+            res.cookie('refreshToken', result.refreshToken, COOKIE_OPTIONS);
+        }
         res.json(result);
     } catch (err) {
+        sendError(res, err);
+    }
+};
+
+exports.refreshToken = async (req, res) => {
+    try {
+        const rawToken = req.cookies?.refreshToken || req.body?.refreshToken;
+        const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+        const result = await authService.refreshSession(rawToken, ip, userAgent);
+        if (result.refreshToken) {
+            res.cookie('refreshToken', result.refreshToken, COOKIE_OPTIONS);
+        }
+        res.json({
+            accessToken: result.accessToken,
+            token: result.accessToken
+        });
+    } catch (err) {
+        res.clearCookie('refreshToken', { path: '/api/auth' });
+        sendError(res, err);
+    }
+};
+
+exports.logout = async (req, res) => {
+    try {
+        const rawToken = req.cookies?.refreshToken || req.body?.refreshToken;
+        await authService.logoutUser(rawToken);
+        res.clearCookie('refreshToken', { path: '/api/auth' });
+        res.json({ message: 'Đăng xuất thành công' });
+    } catch (err) {
+        res.clearCookie('refreshToken', { path: '/api/auth' });
         sendError(res, err);
     }
 };

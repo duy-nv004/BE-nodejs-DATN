@@ -2,14 +2,17 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Role = require('../models/Role');
 
-// Cấp token cho một user: kèm tokenVersion để có thể thu hồi mọi phiên cũ.
-const signToken = (user) => {
+// Cấp Access Token ngắn hạn (30 phút) cho user: kèm tokenVersion để có thể thu hồi mọi phiên cũ khi đổi pass.
+const signAccessToken = (user) => {
     const payload = { id: typeof user === 'object' ? user.id : user };
     if (user && typeof user === 'object' && user.tokenVersion != null) {
         payload.tokenVersion = user.tokenVersion;
     }
-    return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1d' });
+    return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30m' });
 };
+
+// Giữ signToken = signAccessToken để bảo toàn tương thích ngược cho các unit tests và controllers cũ
+const signToken = signAccessToken;
 
 const protect = async (req, res, next) => {
     let token;
@@ -19,7 +22,11 @@ const protect = async (req, res, next) => {
         try {
             decoded = jwt.verify(token, process.env.JWT_SECRET);
         } catch (error) {
-            return res.status(401).json({ message: 'Token không hợp lệ' });
+            const isExpired = error.name === 'TokenExpiredError';
+            return res.status(401).json({
+                message: isExpired ? 'Token đã hết hạn' : 'Token không hợp lệ',
+                code: isExpired ? 'TOKEN_EXPIRED' : 'INVALID_TOKEN'
+            });
         }
 
         try {
@@ -80,4 +87,4 @@ const authorize = (...roles) => {
     };
 };
 
-module.exports = { protect, authorize, signToken };
+module.exports = { protect, authorize, signToken, signAccessToken };
