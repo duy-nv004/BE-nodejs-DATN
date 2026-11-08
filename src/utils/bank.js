@@ -3,5 +3,5 @@
 exports.systemBank = () => ({
     bankId: process.env.BANK_ID || 'MB',
     bankAccount: process.env.BANK_ACCOUNT || '0383808466',
-    bankName: process.env.BANK_NAME || 'EXECUTIVE LENS',
+    bankName: process.env.BANK_NAME || 'HOMESYNC',
 });

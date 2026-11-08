@@ -27,7 +27,9 @@ const SupportRequest = sequelize.define('SupportRequest', {
         }
     },
     landlordNote: { type: DataTypes.TEXT, allowNull: true },
-    repairCost: { type: DataTypes.DECIMAL(12, 0), allowNull: true }
+    repairCost: { type: DataTypes.DECIMAL(12, 0), allowNull: true },
+    chargeToTenant: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    invoiceId: { type: DataTypes.INTEGER, allowNull: true }
 }, { tableName: 'SupportRequests' });
 
 module.exports = SupportRequest;

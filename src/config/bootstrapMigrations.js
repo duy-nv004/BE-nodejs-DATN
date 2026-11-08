@@ -134,6 +134,7 @@ const runBootstrapMigrations = async (sequelize) => {
     waterNew: { type: DT.INTEGER, allowNull: true },
     electricityPrice: { type: DT.DECIMAL(10, 2), allowNull: true },
     waterPrice: { type: DT.DECIMAL(10, 2), allowNull: true },
+    repairFee: { type: DT.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
     prorated: { type: DT.BOOLEAN, allowNull: false, defaultValue: false },
     daysCharged: { type: DT.INTEGER, allowNull: true },
     status: { type: DT.STRING(20), allowNull: true, defaultValue: 'unpaid' },
@@ -178,7 +179,9 @@ const runBootstrapMigrations = async (sequelize) => {
     category: { type: DT.STRING(30), allowNull: false, defaultValue: 'other' },
     images: { type: DT.TEXT, allowNull: true },
     landlordNote: { type: DT.TEXT, allowNull: true },
-    repairCost: { type: DT.DECIMAL(12, 0), allowNull: true }
+    repairCost: { type: DT.DECIMAL(12, 0), allowNull: true },
+    chargeToTenant: { type: DT.BOOLEAN, allowNull: false, defaultValue: false },
+    invoiceId: { type: DT.INTEGER, allowNull: true }
   };
   for (const [col, def] of Object.entries(newSupportColumns)) {
     if (!supportTableDefinition[col]) {

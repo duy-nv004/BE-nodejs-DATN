@@ -18,7 +18,7 @@ const {
 } = require('../controllers/buildingController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { checkBuildingLimit, checkRoomLimit } = require('../middleware/checkLimit');
-const { updateRoomReadings } = require('../controllers/meterController');
+const { updateRoomReadings, checkMeterAnomaly } = require('../controllers/meterController');
 
 // Tất cả các lệnh dưới đây chỉ dành cho Landlord
 router.use(protect, authorize('landlord'));
@@ -38,6 +38,7 @@ router.delete('/rooms/:id', deleteRoom);
 
 // 3. Chốt số điện nước
 router.post('/meter-readings/sync', updateRoomReadings);
+router.post('/meter-readings/check-anomaly', checkMeterAnomaly);
 
 // 4. Quản lý khách thuê (Tenants)
 router.get('/tenants', getTenants);

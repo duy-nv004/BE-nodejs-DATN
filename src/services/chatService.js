@@ -278,7 +278,7 @@ exports.buildContext = async (user, repo = defaultRepo) => {
 
 const ROLE_LABELS = { tenant: "người thuê", landlord: "chủ nhà", admin: "quản trị viên" };
 
-const systemPrompt = (user, context) => `Bạn là trợ lý ảo chuyên trách của hệ thống quản lý nhà cho thuê "Executive Lens".
+const systemPrompt = (user, context) => `Bạn là trợ lý ảo chuyên trách của hệ thống quản lý nhà cho thuê "HomeSync".
 Đang trò chuyện với ${user?.name || "người dùng"} (${ROLE_LABELS[user?.roleData?.name] || "người dùng"}).
 
 Quy tắc vận hành & Rào chắn phạm vi (Scope Guardrails):

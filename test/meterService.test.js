@@ -208,3 +208,38 @@ describe('T2.4 & T2.6 & T3.8 (Nhóm B - meterService)', () => {
         assert.ok(created.every(c => c._tx === customTx));
     });
 });
+
+describe('checkMeterAnomaly', () => {
+    test('phát hiện chỉ số điện tăng đột biến > 150% so với trung bình', async () => {
+        stub(MeterReading, 'findAll', async ({ where }) => {
+            if (where.type === 'electricity') {
+                return [
+                    { readingValue: 300, period: '2026-09' },
+                    { readingValue: 200, period: '2026-08' },
+                    { readingValue: 100, period: '2026-07' }
+                ];
+            }
+            return [];
+        });
+
+        const result = await service.checkMeterAnomaly(5, { electricityValue: 500, period: '2026-10' });
+        assert.equal(result.isAbnormal, true);
+        assert.equal(result.warnings.length, 1);
+        assert.equal(result.warnings[0].type, 'electricity');
+        assert.equal(result.warnings[0].currentUsage, 200);
+        assert.equal(result.warnings[0].averageUsage, 100);
+        assert.equal(result.warnings[0].percentIncrease, 100);
+    });
+
+    test('chỉ số bình thường không cảnh báo', async () => {
+        stub(MeterReading, 'findAll', async () => [
+            { readingValue: 300, period: '2026-09' },
+            { readingValue: 200, period: '2026-08' },
+            { readingValue: 100, period: '2026-07' }
+        ]);
+
+        const result = await service.checkMeterAnomaly(5, { electricityValue: 410, period: '2026-10' });
+        assert.equal(result.isAbnormal, false);
+        assert.equal(result.warnings.length, 0);
+    });
+});

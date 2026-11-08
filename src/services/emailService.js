@@ -28,7 +28,7 @@ const buildNewPasswordHtml = (name, newPassword) => `
             Mở khóa tài khoản thành công!
         </h2>
         <p>Xin chào <b>${name}</b>,</p>
-        <p>Tài khoản chủ nhà của bạn trên hệ thống quản lý <b>Executive Lens</b> đã được phê duyệt mở khóa bởi quản trị viên.</p>
+        <p>Tài khoản chủ nhà của bạn trên hệ thống quản lý <b>HomeSync</b> đã được phê duyệt mở khóa bởi quản trị viên.</p>
         <p>Chúng tôi đã cấp lại một mật khẩu ngẫu nhiên mới để bạn có thể đăng nhập lại vào hệ thống:</p>
         <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; padding: 16px; border-radius: 8px; font-size: 20px; font-weight: bold; text-align: center; letter-spacing: 1.5px; color: #f5222d; margin: 24px 0;">
             ${newPassword}
@@ -38,7 +38,7 @@ const buildNewPasswordHtml = (name, newPassword) => `
         </p>
         <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
         <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">
-            Trân trọng,<br/>Ban quản trị Executive Lens
+            Trân trọng,<br/>Ban quản trị HomeSync
         </p>
     </div>
 `;
@@ -56,9 +56,9 @@ exports.sendNewPasswordEmail = async (toEmail, landlordName, newPassword) => {
     const displayName = landlordName || toEmail;
 
     const mailOptions = {
-        from: `"Executive Lens Support" <${process.env.EMAIL_USER}>`,
+        from: `"HomeSync Support" <${process.env.EMAIL_USER}>`,
         to: toEmail,
-        subject: 'Mở khóa tài khoản & Cấp mật khẩu mới - Executive Lens',
+        subject: 'Mở khóa tài khoản & Cấp mật khẩu mới - HomeSync',
         html: buildNewPasswordHtml(displayName, newPassword),
     };
 
@@ -81,16 +81,16 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
  */
 exports.sendTicketRejectedEmail = async (toEmail, reason) => {
     const mailOptions = {
-        from: `"Executive Lens Support" <${process.env.EMAIL_USER}>`,
+        from: `"HomeSync Support" <${process.env.EMAIL_USER}>`,
         to: toEmail,
-        subject: 'Khiếu nại mở khóa tài khoản bị từ chối - Executive Lens',
+        subject: 'Khiếu nại mở khóa tài khoản bị từ chối - HomeSync',
         html: `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; color: #1a202c;">
         <h2 style="color: #0f172a; margin-top: 0;">Khiếu nại chưa được chấp nhận</h2>
         <p>Quản trị viên đã xem xét và từ chối yêu cầu mở khóa tài khoản chủ nhà của bạn.</p>
         <p><b>Lý do:</b> ${escapeHtml(reason)}</p>
         <p>Bạn có thể gửi khiếu nại mới kèm thông tin bổ sung.</p>
-        <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">Trân trọng,<br/>Ban quản trị Executive Lens</p>
+        <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">Trân trọng,<br/>Ban quản trị HomeSync</p>
     </div>`,
     };
 

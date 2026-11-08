@@ -1,4 +1,9 @@
 const notificationService = require('../services/notificationService');
+const sseService = require('../services/sseService');
+
+exports.streamNotifications = (req, res) => {
+    sseService.addClient(req.user.id, req, res);
+};
 
 exports.getNotifications = async (req, res) => {
     try {

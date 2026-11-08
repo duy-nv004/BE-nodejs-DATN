@@ -12,3 +12,13 @@ exports.updateRoomReadings = async (req, res) => {
         sendError(res, err);
     }
 };
+
+exports.checkMeterAnomaly = async (req, res) => {
+    try {
+        const { roomId, electricityValue, waterValue, period } = req.body;
+        const result = await meterService.checkMeterAnomaly(roomId, { electricityValue, waterValue, period });
+        res.status(200).json(result);
+    } catch (err) {
+        sendError(res, err);
+    }
+};

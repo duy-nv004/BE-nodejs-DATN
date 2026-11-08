@@ -18,8 +18,16 @@ const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization?.startsWith('Bearer')) {
         token = req.headers.authorization.split(' ')[1];
-        let decoded;
-        try {
+    } else if (req.query?.token) {
+        token = req.query.token;
+    }
+
+    if (!token) {
+        return res.status(401).json({ message: 'Không có token, vui lòng đăng nhập' });
+    }
+
+    let decoded;
+    try {
             decoded = jwt.verify(token, process.env.JWT_SECRET);
         } catch (error) {
             const isExpired = error.name === 'TokenExpiredError';
@@ -74,9 +82,7 @@ const protect = async (req, res, next) => {
         }
 
         return next();
-    }
-    res.status(401).json({ message: 'Vui lòng đăng nhập' });
-};
+    };
 
 const authorize = (...roles) => {
     return (req, res, next) => {

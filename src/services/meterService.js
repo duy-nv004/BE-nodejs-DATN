@@ -221,3 +221,66 @@ exports.updateRoomReadings = async function (arg1, arg2, arg3, arg4, arg5, arg6)
 };
 
 exports.resolvePeriod = resolvePeriod;
+
+/**
+ * Phát hiện bất thường tiêu thụ điện/nước so với trung bình các kỳ trước.
+ */
+exports.checkMeterAnomaly = async (roomId, { electricityValue, waterValue, period } = {}) => {
+    const targetPeriod = resolvePeriod(period);
+    const warnings = [];
+
+    const getPastReadings = async (type) => {
+        return MeterReading.findAll({
+            where: {
+                roomId,
+                type,
+                period: { [Op.lt]: targetPeriod, [Op.ne]: null }
+            },
+            order: [['period', 'DESC']],
+            limit: 4
+        });
+    };
+
+    const checkType = async (type, currentVal, minThreshold, label, unit) => {
+        if (currentVal === undefined || currentVal === null || currentVal === '') return;
+        const numVal = Number(currentVal);
+        if (!Number.isFinite(numVal) || numVal < 0) return;
+
+        const past = await getPastReadings(type);
+        if (past.length < 2) return;
+
+        const usages = [];
+        for (let i = 0; i < past.length - 1; i++) {
+            const delta = past[i].meterReset ? past[i].readingValue : (past[i].readingValue - past[i + 1].readingValue);
+            if (delta >= 0) usages.push(delta);
+        }
+
+        if (usages.length === 0) return;
+        const avg = usages.reduce((a, b) => a + b, 0) / usages.length;
+        if (avg <= 0) return;
+
+        const lastReading = past[0];
+        const currentUsage = numVal - lastReading.readingValue;
+
+        if (currentUsage > 1.5 * avg && currentUsage > minThreshold) {
+            const percent = Math.round(((currentUsage - avg) / avg) * 100);
+            warnings.push({
+                type,
+                label,
+                unit,
+                currentUsage,
+                averageUsage: Math.round(avg),
+                percentIncrease: percent,
+                message: `Chỉ số ${label} tiêu thụ (${currentUsage} ${unit}) tăng ${percent}% so với trung bình ${usages.length} kỳ trước (${Math.round(avg)} ${unit}). Vui lòng kiểm tra lại.`
+            });
+        }
+    };
+
+    await checkType('electricity', electricityValue, 30, 'điện', 'kWh');
+    await checkType('water', waterValue, 5, 'nước', 'm³');
+
+    return {
+        isAbnormal: warnings.length > 0,
+        warnings
+    };
+};

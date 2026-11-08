@@ -20,6 +20,9 @@ beforeEach(() => {
     stub(sequelize, 'transaction', async (fn) => fn({}));
     stub(SePayEvent, 'findOne', async () => null);
     stub(AdminLog, 'create', async () => ({}));
+    const SupportRequest = require('../src/models/SupportRequest');
+    stub(SupportRequest, 'findAll', async () => []);
+    stub(SupportRequest, 'update', async () => [0]);
 });
 afterEach(() => { while (restores.length) restores.pop()(); });
 
@@ -35,6 +38,30 @@ describe('getRevenueStats', () => {
         const res = await service.getRevenueStats(1, { month: 1, year: 2026 });
         assert.equal(res.stats.invoiceCount, 2);
         assert.equal(res.stats.unpaidRooms, 1);
+    });
+
+    test('tính totalRepairCost, netProfit, occupancyRate và trend12Months', async () => {
+        const SupportRequest = require('../src/models/SupportRequest');
+        stub(Invoice, 'findAll', async () => [
+            { totalAmount: 10000000, paidAmount: 10000000, isPaid: true, month: 3, year: 2026 }
+        ]);
+        stub(SupportRequest, 'findAll', async () => [
+            { repairCost: 1500000, chargeToTenant: false, updatedAt: new Date('2026-03-10') }
+        ]);
+        stub(Room, 'count', async ({ where }) => {
+            if (where?.status === 'occupied' || where?.status === 'rented') return 8;
+            return 10;
+        });
+
+        const res = await service.getRevenueStats(1, { month: 3, year: 2026 });
+        assert.equal(res.stats.totalCollected, 10000000);
+        assert.equal(res.stats.totalRepairCost, 1500000);
+        assert.equal(res.stats.netProfit, 8500000);
+        assert.equal(res.stats.occupancyRate, 80);
+        assert.ok(Array.isArray(res.stats.trend12Months));
+        assert.equal(res.stats.trend12Months.length, 12);
+        assert.equal(res.stats.trend12Months[2].collected, 10000000);
+        assert.equal(res.stats.trend12Months[2].profit, 8500000);
     });
 });
 
@@ -623,5 +650,34 @@ describe('T1.5 & T2.2 & T2.4 & T2.6 (Nhóm B - invoiceService)', () => {
         assert.equal(afterCallbacks.length, 1);
         await afterCallbacks[0]();
         assert.equal(sentTele, 1);
+    });
+
+    test('generateInvoice: tự động cộng repairCost từ SupportRequest có chargeToTenant=true và gán invoiceId', async () => {
+        const SupportRequest = require('../src/models/SupportRequest');
+        stub(Room, 'findByPk', async () => ({ id: 5, roomNumber: '101', price: 3000000, building: { landlordId: 1 } }));
+        stub(Contract, 'findOne', async () => ({ id: 2, tenantId: 7, paymentDay: 30, electricityPrice: 3500, waterPrice: 20000, rentPrice: 3000000, endDate: '2027-12-31' }));
+        stub(Invoice, 'findOne', async () => null);
+        stub(MeterReading, 'findOne', async ({ where }) => ({ readingValue: typeof where.period === 'object' ? 100 : 100 }));
+        
+        let updatedSrArgs = null;
+        stub(SupportRequest, 'findAll', async () => [
+            { id: 10, repairCost: 150000, chargeToTenant: true, invoiceId: null },
+            { id: 11, repairCost: 50000, chargeToTenant: true, invoiceId: null }
+        ]);
+        stub(SupportRequest, 'update', async (fields, opts) => {
+            updatedSrArgs = { fields, opts };
+            return [2];
+        });
+
+        let createdPayload = null;
+        stub(Invoice, 'create', async (data) => {
+            createdPayload = data;
+            return record({ id: 99, ...data });
+        });
+
+        await service.generateInvoice({ roomId: 5, month: 2, year: 2027 }, 1);
+        assert.equal(createdPayload.repairFee, 200000);
+        assert.equal(createdPayload.totalAmount, 3000000 + 200000);
+        assert.equal(updatedSrArgs?.fields?.invoiceId, 99);
     });
 });

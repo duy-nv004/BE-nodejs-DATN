@@ -103,6 +103,19 @@ exports.createTenantRequest = async (tenantId, { description, severity, roomId, 
                 newRequest.id
             );
 
+            try {
+                const sseService = require('./sseService');
+                sseService.sendToUser(landlordId, 'new_support_request', {
+                    requestId: newRequest.id,
+                    roomNumber: room.roomNumber,
+                    buildingName: room.building.name,
+                    category: category || 'other',
+                    description
+                });
+            } catch (sseErr) {
+                // Non-blocking
+            }
+
             if (!options?.skipTelegram) {
                 try {
                     const landlord = room.building.landlord || (await User.findByPk(landlordId));
@@ -225,7 +238,7 @@ const STATUS_TRANSITIONS = {
     in_progress: ['resolved'],
     resolved: []
 };
-exports.updateRequestStatus = async (landlordId, requestId, { status, landlordNote, repairCost, skipTelegram } = {}, extra = {}) => {
+exports.updateRequestStatus = async (landlordId, requestId, { status, landlordNote, repairCost, chargeToTenant, skipTelegram } = {}, extra = {}) => {
     if (!status || !['pending', 'in_progress', 'resolved'].includes(status)) {
         throw createError(400, "Trạng thái không hợp lệ.");
     }
@@ -273,6 +286,7 @@ exports.updateRequestStatus = async (landlordId, requestId, { status, landlordNo
     const updateFields = { status };
     if (landlordNote !== undefined) updateFields.landlordNote = landlordNote;
     if (repairCost !== undefined) updateFields.repairCost = repairCost === null ? null : Number(repairCost);
+    updateFields.chargeToTenant = Boolean(chargeToTenant);
 
     // Cập nhật trạng thái nguyên tử theo (id, oldStatus) để chặn 2 request đồng thời gửi 2 thông báo
     if (SupportRequest.update !== origSupportUpdate || request instanceof SupportRequest) {

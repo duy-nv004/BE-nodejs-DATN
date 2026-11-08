@@ -125,6 +125,23 @@ describe('updateRequestStatus (S1)', () => {
         stub(SupportRequest, 'findByPk', async () => fakeRequest());
         await assert.rejects(service.updateRequestStatus(2, 3, { status: 'resolved', repairCost: -1 }), { statusCode: 400 });
     });
+
+    test('gán chargeToTenant = true khi chủ nhà chọn phụ thu khách thuê', async () => {
+        const r = fakeRequest();
+        stub(SupportRequest, 'findByPk', async () => r);
+        stub(notificationService, 'createNotification', async () => {});
+        await service.updateRequestStatus(2, 3, { status: 'resolved', repairCost: 200000, chargeToTenant: true });
+        assert.equal(r.chargeToTenant, true);
+        assert.equal(r.repairCost, 200000);
+    });
+
+    test('chargeToTenant mặc định false nếu không truyền', async () => {
+        const r = fakeRequest();
+        stub(SupportRequest, 'findByPk', async () => r);
+        stub(notificationService, 'createNotification', async () => {});
+        await service.updateRequestStatus(2, 3, { status: 'resolved', repairCost: 100000 });
+        assert.equal(r.chargeToTenant, false);
+    });
 });
 
 describe('tenantController.createSupportRequest (S1)', () => {

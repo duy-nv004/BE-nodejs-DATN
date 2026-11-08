@@ -385,6 +385,12 @@ const processPayload = async (payload, transferContent, amount) => {
                     txOpt
                 );
 
+                try {
+                    const sseService = require('./sseService');
+                    if (landlordId) sseService.sendToUser(landlordId, 'payment_success', { invoiceId, amount, isFull: false, remaining: Math.max(0, invoiceTotal - newPaidAmount), roomNumber });
+                    if (invoice.tenantId) sseService.sendToUser(invoice.tenantId, 'payment_success', { invoiceId, amount, isFull: false, remaining: Math.max(0, invoiceTotal - newPaidAmount), roomNumber });
+                } catch (e) {}
+
                 const remainingAfter = Math.max(0, invoiceTotal - newPaidAmount);
                 await writeAdminLog({
                     action: 'INVOICE_PARTIAL_PAYMENT',
@@ -429,6 +435,12 @@ const processPayload = async (payload, transferContent, amount) => {
                 null,
                 txOpt
             );
+
+            try {
+                const sseService = require('./sseService');
+                if (landlordId) sseService.sendToUser(landlordId, 'payment_success', { invoiceId, amount, isFull: true, roomNumber });
+                if (invoice.tenantId) sseService.sendToUser(invoice.tenantId, 'payment_success', { invoiceId, amount, isFull: true, roomNumber });
+            } catch (e) {}
 
             // T2.2: Trả thừa (amount > remainingAmount)
             if (amount > remainingAmount) {

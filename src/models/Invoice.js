@@ -27,6 +27,10 @@ const Invoice = sequelize.define('Invoice', {
     serviceTotal: { 
         type: DataTypes.DECIMAL(10, 2) 
     }, // Internet + Vệ sinh
+    repairFee: {
+        type: DataTypes.DECIMAL(10, 2),
+        defaultValue: 0
+    }, // Phụ thu tiền sửa chữa / đền bù hư hại nếu khách chịu
     totalAmount: { 
         type: DataTypes.DECIMAL(10, 2) 
     },
