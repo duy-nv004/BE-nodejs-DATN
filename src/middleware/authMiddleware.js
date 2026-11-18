@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Role = require('../models/Role');
+const userCache = require('../utils/userCache');
 
 // Cấp Access Token ngắn hạn (30 phút) cho user: kèm tokenVersion để có thể thu hồi mọi phiên cũ khi đổi pass.
 const signAccessToken = (user) => {
@@ -37,22 +38,35 @@ const protect = async (req, res, next) => {
             });
         }
 
-        try {
-            req.user = await User.findByPk(decoded.id, {
-                include: [{ model: Role, as: 'roleData' }]
-            });
-        } catch (dbErr) {
-            console.error('[authMiddleware] Lỗi truy vấn người dùng:', dbErr.message);
-            return res.status(500).json({ message: 'Lỗi máy chủ khi xác thực phiên đăng nhập' });
-        }
-
-        if (!req.user) return res.status(401).json({ message: 'Người dùng không tồn tại' });
-
-        // Thu hồi phiên: token mang tokenVersion cũ (hoặc không có, cấp trước tính
-        // năng này) bị từ chối sau khi đổi mật khẩu / reset mật khẩu.
         const tokenVersion = decoded.tokenVersion ?? 0;
-        if (tokenVersion !== (req.user.tokenVersion ?? 0)) {
-            return res.status(401).json({ message: 'Phiên đăng nhập đã hết hiệu lực, vui lòng đăng nhập lại' });
+        const cachedUser = await userCache.get(decoded.id, tokenVersion);
+
+        if (cachedUser) {
+            req.user = cachedUser;
+        } else {
+            try {
+                req.user = await User.findByPk(decoded.id, {
+                    include: [{ model: Role, as: 'roleData' }]
+                });
+            } catch (dbErr) {
+                console.error('[authMiddleware] Lỗi truy vấn người dùng:', dbErr.message);
+                return res.status(500).json({ message: 'Lỗi máy chủ khi xác thực phiên đăng nhập' });
+            }
+
+            if (!req.user) return res.status(401).json({ message: 'Người dùng không tồn tại' });
+
+            // Thu hồi phiên: token mang tokenVersion cũ (hoặc không có, cấp trước tính
+            // năng này) bị từ chối sau khi đổi mật khẩu / reset mật khẩu.
+            if (tokenVersion !== (req.user.tokenVersion ?? 0)) {
+                return res.status(401).json({ message: 'Phiên đăng nhập đã hết hiệu lực, vui lòng đăng nhập lại' });
+            }
+
+            if (req.user.status === 'locked') {
+                return res.status(403).json({ code: 'ACCOUNT_LOCKED', message: `Tài khoản của bạn đã bị khóa bởi quản trị viên${req.user.lockReason ? `. Lý do: ${req.user.lockReason}` : ''}` });
+            }
+
+            // Lưu vào cache để giảm tải DB cho các request kế tiếp
+            await userCache.set(req.user.id, tokenVersion, req.user);
         }
 
         if (req.user.status === 'locked') {

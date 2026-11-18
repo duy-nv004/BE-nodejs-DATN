@@ -225,7 +225,15 @@ exports.resolvePeriod = resolvePeriod;
 /**
  * Phát hiện bất thường tiêu thụ điện/nước so với trung bình các kỳ trước.
  */
-exports.checkMeterAnomaly = async (roomId, { electricityValue, waterValue, period } = {}) => {
+exports.checkMeterAnomaly = async (roomId, { electricityValue, waterValue, period } = {}, options = {}) => {
+    if (options?.landlordId !== undefined && options?.landlordId !== null) {
+        const room = await Room.findByPk(roomId, {
+            include: [{ model: Building, as: 'building' }]
+        });
+        if (!room || Number(room.building?.landlordId) !== Number(options.landlordId)) {
+            throw createError(404, 'Phòng trọ không tồn tại hoặc bạn không có quyền kiểm tra');
+        }
+    }
     const targetPeriod = resolvePeriod(period);
     const warnings = [];
 

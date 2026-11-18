@@ -74,7 +74,7 @@ describe('chatRoutes', () => {
     const indexSrc = fs.readFileSync(path.join(__dirname, '../index.js'), 'utf8');
 
     test('POST / bắt buộc đăng nhập (protect) và có giới hạn tần suất', () => {
-        assert.match(src, /router\.post\(\s*['"]\/['"]\s*,\s*protect\s*,\s*chatLimiter\s*,\s*chatController\.chat/);
+        assert.match(src, /router\.post\(\s*['"]\/['"]\s*,\s*protect\s*,\s*chatLimiter\s*,\s*(?:checkChatLimit\s*,\s*)?chatController\.chat/);
     });
 
     test('được gắn vào /api/chat trong index.js', () => {

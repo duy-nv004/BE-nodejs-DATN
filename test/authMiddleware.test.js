@@ -90,4 +90,35 @@ describe('protect', () => {
         assert.equal(nextCalled, true);
         assert.equal(syncCalled, false, 'syncExpiredPlan không được gọi cho tenant');
     });
+
+    test('TDD: sử dụng userCache để tránh query DB lặp lại khi token hợp lệ', async () => {
+        const userCache = require('../src/utils/userCache');
+        await userCache.clear();
+        process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+        const token = jwt.sign({ id: 99, tokenVersion: 0 }, process.env.JWT_SECRET);
+        let dbQueryCount = 0;
+        stub(User, 'findByPk', async () => {
+            dbQueryCount++;
+            return { id: 99, tokenVersion: 0, status: 'active', roleData: { name: 'tenant' } };
+        });
+
+        const req1 = { headers: { authorization: `Bearer ${token}` } };
+        const res1 = makeRes();
+        let next1 = false;
+        await protect(req1, res1, () => { next1 = true; });
+
+        assert.equal(next1, true);
+        assert.equal(dbQueryCount, 1);
+        assert.equal(req1.user.id, 99);
+
+        // Lần 2 với cùng token: phải lấy từ cache, không tăng dbQueryCount
+        const req2 = { headers: { authorization: `Bearer ${token}` } };
+        const res2 = makeRes();
+        let next2 = false;
+        await protect(req2, res2, () => { next2 = true; });
+
+        assert.equal(next2, true);
+        assert.equal(dbQueryCount, 1, 'Lần gọi thứ 2 phải lấy từ cache, không query DB lại');
+        assert.equal(req2.user.id, 99);
+    });
 });

@@ -12,6 +12,7 @@ const {
   listOccupants,
   addOccupant
 } = require('../controllers/tenantController');
+const { getTenantBookings } = require('../controllers/publicController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const upload = require('../middleware/upload');
 
@@ -19,15 +20,20 @@ const upload = require('../middleware/upload');
 const uploadSupportImages = (req, res, next) =>
   upload.support.array('images', 2)(req, res, err => err ? res.status(400).json({ message: err.message }) : next());
 
+const uploadCccdImages = (req, res, next) =>
+  upload.cccd.fields([{ name: 'cccdFront', maxCount: 1 }, { name: 'cccdBack', maxCount: 1 }])(req, res,
+    err => err ? res.status(400).json({ message: err.message }) : next());
+
 // Áp dụng bảo mật cho toàn bộ các route bên dưới
 router.use(protect);
 router.use(authorize('tenant'));
 
 router.get('/summary', getDashboardSummary);
 router.get('/invoices', getInvoices);
+router.get('/bookings', getTenantBookings);
 router.get('/support', getSupportRequests);
 router.post('/support', uploadSupportImages, createSupportRequest);
-router.post('/contract/:id/sign', signContract);
+router.post('/contract/:id/sign', uploadCccdImages, signContract);
 router.post('/contract/:id/reject', rejectContract);
 router.post('/contract/:id/requests', createContractRequest);
 router.get('/requests', getContractRequests);

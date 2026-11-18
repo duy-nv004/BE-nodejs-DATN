@@ -13,6 +13,9 @@ const sequelize = require('../config/db');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const emailService = require('./emailService');
+const userCache = require('../utils/userCache');
+const cacheHelper = require('../utils/cacheHelper');
+const { getRedisStats } = require('../config/redis');
 const notificationService = require('./notificationService');
 const { computeConvertedPlanExpiry } = require('./planService');
 const { Op } = require('sequelize');
@@ -109,7 +112,11 @@ const mapLogToActivity = (log) => {
 /**
  * Lấy thống kê tổng quan hệ thống cho Admin Dashboard (T2.10).
  */
+const ADMIN_STATS_CACHE_KEY = 'cache:stats:admin:system';
+const ADMIN_STATS_TTL_SEC = 300;
+
 exports.getSystemStats = async () => {
+    return cacheHelper.getOrSet(ADMIN_STATS_CACHE_KEY, ADMIN_STATS_TTL_SEC, async () => {
     const landlordRole = await getLandlordRole();
 
     const [landlordCount, userCount, freeCount, basicCount, proCount, plans, logs] = await Promise.all([
@@ -177,6 +184,7 @@ exports.getSystemStats = async () => {
         },
         recentActivity: logs.map(mapLogToActivity),
     };
+    });
 };
 
 // ─── Landlords ──────────────────────────────────────────────────────────────────
@@ -313,6 +321,9 @@ exports.updateLandlordPlan = async (id, plan, adminId, billingCycle = 'monthly')
             description: `Admin thay đổi gói cước của chủ nhà ${landlord.name || landlord.email} (${landlord.email}) từ gói ${oldPlan.toUpperCase()} sang ${normalizedPlan.toUpperCase()}. Hạn mới: ${landlord.planExpiresAt || 'không thời hạn'}${cancelNote}`,
         }, txOpt);
 
+        await userCache.del(landlord.id);
+        await cacheHelper.del(ADMIN_STATS_CACHE_KEY);
+
         return {
             message: `Đã cập nhật gói cước của chủ nhà ${landlord.name || landlord.email} thành ${normalizedPlan.toUpperCase()}`,
             landlord: {
@@ -331,7 +342,21 @@ exports.updateLandlordPlan = async (id, plan, adminId, billingCycle = 'monthly')
  * Khóa hoặc mở khóa tài khoản chủ nhà (A2, A7, T1.15).
  * Khóa bắt buộc có lý do (>= 5 ký tự) và thu hồi phiên (tăng tokenVersion, xóa telegramLinkToken).
  */
-exports.updateLandlordStatus = async (id, status, adminId, { reason, resetPassword = false } = {}) => {
+exports.updateLandlordStatus = async (arg1, arg2, arg3, arg4) => {
+    let id = arg1;
+    let status = arg2;
+    let adminId = arg3;
+    let { reason, resetPassword = false } = arg4 || {};
+
+    // Chuẩn hóa chữ ký 3 tham số từ chatTools: (adminId, landlordId, { status, lockReason, reason, resetPassword })
+    if (typeof arg3 === 'object' && arg3 !== null && arg4 === undefined) {
+        adminId = arg1;
+        id = arg2;
+        status = arg3.status;
+        reason = arg3.reason ?? arg3.lockReason;
+        resetPassword = arg3.resetPassword ?? false;
+    }
+
     const normalizedStatus = status?.toLowerCase();
     if (!VALID_STATUSES.includes(normalizedStatus)) {
         throw createError(400, `Trạng thái không hợp lệ. Chỉ chấp nhận: ${VALID_STATUSES.join(', ')}`);
@@ -371,6 +396,8 @@ exports.updateLandlordStatus = async (id, status, adminId, { reason, resetPasswo
     landlord.status = normalizedStatus;
     landlord.lockReason = isLock ? trimmedReason : null;
     await landlord.save();
+    await userCache.del(landlord.id);
+    await cacheHelper.del(ADMIN_STATS_CACHE_KEY);
 
     const action = isLock ? 'LOCK_USER' : 'UNLOCK_USER';
     const actionText = isLock ? 'khóa tài khoản' : 'mở khóa tài khoản';
@@ -412,7 +439,7 @@ exports.updatePlan = async (planId, updates, adminId) => {
     const plan = await Plan.findByPk(planId);
     if (!plan) throw createError(404, 'Không tìm thấy gói cước để cập nhật');
 
-    const MIN_VALUES = { price: 0, annualPrice: 0, maxBuildings: 1, maxRoomsPerBuilding: 1, maxAICallsPerMonth: -1 };
+    const MIN_VALUES = { price: 0, annualPrice: 0, maxBuildings: 1, maxRoomsPerBuilding: 1, maxAICallsPerMonth: -1, maxChatCallsPerMonth: -1 };
     const next = {};
     for (const [field, min] of Object.entries(MIN_VALUES)) {
         if (updates[field] === undefined) continue;
@@ -443,6 +470,8 @@ exports.updatePlan = async (planId, updates, adminId) => {
     if (changes.length === 0) return plan;
 
     await plan.save();
+    await cacheHelper.del(`cache:plan:${plan.name}`);
+    await cacheHelper.del(ADMIN_STATS_CACHE_KEY);
     await AdminLog.create({
         adminId,
         action: 'UPDATE_PLAN_CONFIG',
@@ -581,7 +610,20 @@ exports.getLandlordTickets = async () => {
 /**
  * Xử lý quyết định cho ticket khiếu nại (duyệt hoặc từ chối).
  */
-exports.resolveLandlordTicket = async (ticketId, status, adminId, { reason } = {}) => {
+exports.resolveLandlordTicket = async (arg1, arg2, arg3, arg4) => {
+    let ticketId = arg1;
+    let status = arg2;
+    let adminId = arg3;
+    let { reason } = arg4 || {};
+
+    // Chuẩn hóa chữ ký 3 tham số từ chatTools: (adminId, ticketId, { status, adminResponse, reason })
+    if (typeof arg3 === 'object' && arg3 !== null && arg4 === undefined) {
+        adminId = arg1;
+        ticketId = arg2;
+        status = arg3.status;
+        reason = arg3.reason ?? arg3.adminResponse;
+    }
+
     if (!VALID_TICKET_RESOLUTIONS.includes(status)) {
         throw createError(400, `Trạng thái giải quyết không hợp lệ. Chỉ chấp nhận: ${VALID_TICKET_RESOLUTIONS.join(', ')}`);
     }
@@ -625,5 +667,45 @@ exports.resolveLandlordTicket = async (ticketId, status, adminId, { reason } = {
         message: `Đã cập nhật trạng thái khiếu nại thành ${status.toUpperCase()}`
             + (emailFailed ? ' (gửi email thông báo cho chủ nhà thất bại)' : ''),
         ticket,
+    };
+};
+
+// ─── Redis Cache Monitoring & Flush ─────────────────────────────────────────────
+
+const VALID_FLUSH_SCOPES = ['all', 'stats', 'plans', 'users'];
+
+exports.getCacheStatus = async () => {
+    const redis = await getRedisStats();
+    const metrics = cacheHelper.getMetrics();
+    return { redis, metrics };
+};
+
+exports.flushCache = async (adminId, scope = 'all') => {
+    const normalized = VALID_FLUSH_SCOPES.includes(scope) ? scope : 'all';
+    let clearedKeys = 0;
+
+    if (normalized === 'all') {
+        clearedKeys += await cacheHelper.delByPrefix('cache:');
+        clearedKeys += await userCache.clear();
+        cacheHelper.resetMetrics();
+    } else if (normalized === 'stats') {
+        clearedKeys += await cacheHelper.delByPrefix('cache:stats:');
+    } else if (normalized === 'plans') {
+        clearedKeys += await cacheHelper.delByPrefix('cache:plan:');
+    } else if (normalized === 'users') {
+        clearedKeys += await userCache.clear();
+    }
+
+    await AdminLog.create({
+        adminId,
+        action: 'FLUSH_CACHE',
+        targetUserId: null,
+        description: `Admin đã làm mới bộ nhớ đệm Redis (phạm vi: ${normalized}, đã xóa ${clearedKeys} key)`,
+    });
+
+    return {
+        message: `Đã xóa ${clearedKeys} key bộ nhớ đệm (${normalized})`,
+        scope: normalized,
+        clearedKeys,
     };
 };

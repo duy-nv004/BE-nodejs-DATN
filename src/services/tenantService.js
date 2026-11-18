@@ -6,6 +6,7 @@ const Invoice = require('../models/Invoice');
 const SupportRequest = require('../models/SupportRequest');
 const DepositRecord = require('../models/DepositRecord');
 const { createError } = require('../utils/errors');
+const { toCccdSignedUrl } = require('./contractService');
 
 // T2.8: Tìm các hợp đồng của khách thuê (gồm cả hợp đồng đã thanh lý 'terminated')
 const findTenantContracts = async (userId) => Contract.findAll({
@@ -129,6 +130,10 @@ exports.getDashboardSummary = async (userId, contractId = null) => {
             tenantDob: contract.tenantDob,
             tenantHometown: contract.tenantHometown,
             tenantPhone: contract.tenantPhone,
+            tenantCccdFront: contract.tenantCccdFront || null,
+            tenantCccdBack: contract.tenantCccdBack || null,
+            cccdFrontUrl: await toCccdSignedUrl(contract.tenantCccdFront),
+            cccdBackUrl: await toCccdSignedUrl(contract.tenantCccdBack),
             numTenants: contract.numTenants,
             paymentDay: contract.paymentDay,
             inventory: contract.inventory,

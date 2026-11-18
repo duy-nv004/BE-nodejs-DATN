@@ -2,6 +2,7 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/db');
 const bcrypt = require('bcryptjs');
 const Role = require('./Role');
+const { piiField } = require('../utils/crypto');
 
 const User = sequelize.define('User', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -40,14 +41,16 @@ const User = sequelize.define('User', {
     // sẽ gán chat Telegram của họ vào bất kỳ tài khoản nào (xem telegramRoutes).
     telegramLinkToken: { type: DataTypes.STRING, allowNull: true },
     telegramLinkTokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
-    cccd: { type: DataTypes.STRING, allowNull: true },
+    cccd: { type: DataTypes.STRING, allowNull: true, ...piiField('cccd') },
     dob: { type: DataTypes.STRING, allowNull: true },
     hometown: { type: DataTypes.TEXT, allowNull: true },
     status: { type: DataTypes.ENUM('active', 'locked'), defaultValue: 'active' },
     // Lý do admin khóa tài khoản (A2), hiển thị khi đăng nhập bị chặn
     lockReason: { type: DataTypes.STRING(500), allowNull: true },
     // Tăng khi đổi/reset mật khẩu; token mang version cũ bị protect từ chối (thu hồi phiên)
-    tokenVersion: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 }
+    tokenVersion: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    resetPasswordToken: { type: DataTypes.STRING, allowNull: true },
+    resetPasswordExpiresAt: { type: DataTypes.DATE, allowNull: true }
 }, {
     tableName: 'Users',
     hooks: {

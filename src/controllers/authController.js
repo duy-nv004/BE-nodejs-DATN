@@ -34,6 +34,24 @@ exports.registerLandlord = async (req, res) => {
     }
 };
 
+exports.registerTenant = async (req, res) => {
+    try {
+        const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+        const result = await authService.registerTenant({
+            ...req.body,
+            ip,
+            userAgent
+        });
+        if (result.refreshToken) {
+            res.cookie('refreshToken', result.refreshToken, COOKIE_OPTIONS);
+        }
+        res.status(201).json(result);
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
 exports.login = async (req, res) => {
     try {
         const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
@@ -105,6 +123,24 @@ exports.updateProfile = async (req, res) => {
 exports.changePassword = async (req, res) => {
     try {
         const result = await authService.changePassword(req.user.id, req.body);
+        res.json(result);
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
+exports.forgotPassword = async (req, res) => {
+    try {
+        const result = await authService.forgotPassword(req.body);
+        res.json(result);
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const result = await authService.resetPassword(req.body);
         res.json(result);
     } catch (err) {
         sendError(res, err);

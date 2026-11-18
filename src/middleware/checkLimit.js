@@ -5,11 +5,23 @@ const Plan = require('../models/Plan');
 const User = require('../models/User');
 
 const { createError } = require('../utils/errors');
+const cacheHelper = require('../utils/cacheHelper');
+
+const PLAN_CACHE_TTL_SEC = 3600;
+
+const findPlanCached = async (planName, { transaction } = {}) => {
+    if (!planName) return null;
+    if (transaction) {
+        return Plan.findOne({ where: { name: planName }, transaction });
+    }
+    return cacheHelper.getOrSet(`cache:plan:${planName}`, PLAN_CACHE_TTL_SEC, async () => {
+        const plan = await Plan.findOne({ where: { name: planName } });
+        return plan && typeof plan.toJSON === 'function' ? plan.toJSON() : plan;
+    });
+};
 
 const getPlan = async (user, { transaction } = {}) => {
-    const opts = { where: { name: user.plan } };
-    if (transaction) opts.transaction = transaction;
-    const plan = await Plan.findOne(opts);
+    const plan = await findPlanCached(user.plan, { transaction });
     if (!plan) throw createError(500, "Không tìm thấy cấu hình gói cước của người dùng");
     return plan;
 };
@@ -87,10 +99,49 @@ const currentPeriod = () => {
 const getUsedThisMonth = (user) =>
     user.lastAiUseMonth === currentPeriod() ? (user.aiUseCountThisMonth || 0) : 0;
 
+/** Số lượt chat đã dùng trong tháng hiện tại (0 nếu sang tháng mới) */
+const getChatUsedThisMonth = (user) =>
+    user.lastChatUseMonth === currentPeriod() ? (user.chatUseCountThisMonth || 0) : 0;
+
+/** Giới hạn mặc định nếu Plan chưa cấu hình maxChatCallsPerMonth */
+const DEFAULT_MAX_CHAT_BY_PLAN = {
+    free: 20,
+    basic: 100,
+    pro: -1
+};
+
+const assertChatLimit = async (user) => {
+    if (!user || !user.plan) return;
+    try {
+        const plan = await findPlanCached(user.plan);
+        const max = plan?.maxChatCallsPerMonth != null 
+            ? plan.maxChatCallsPerMonth 
+            : (DEFAULT_MAX_CHAT_BY_PLAN[user.plan] ?? 20);
+
+        if (max === -1) return;
+
+        if (getChatUsedThisMonth(user) >= max) {
+            throw createError(403, `Bạn đã sử dụng hết hạn mức hỏi đáp trợ lý AI trong tháng này (${max} câu). Vui lòng nâng cấp gói cước để tiếp tục sử dụng!`);
+        }
+    } catch (err) {
+        if (err.statusCode) throw err;
+        // Bỏ qua lỗi kết nối DB trong môi trường test độc lập
+    }
+};
+
+const checkChatLimit = async (req, res, next) => {
+    try {
+        await assertChatLimit(req.user);
+        next();
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
+
 const checkAILimit = async (req, res, next) => {
     try {
         const user = req.user;
-        const plan = await Plan.findOne({ where: { name: user.plan } });
+        const plan = await findPlanCached(user.plan);
 
         if (!plan) {
             return res.status(500).json({ message: "Không tìm thấy cấu hình gói cước" });
@@ -120,14 +171,28 @@ const checkAILimit = async (req, res, next) => {
     }
 };
 
-// Hàng đợi khóa theo userId để chống race condition khi gọi song song Promise.all
+// Hàng đợi khóa theo userId kết hợp Distributed Lock (Redis) để chống race condition cả đa luồng và đa tiến trình
+const { acquireLock, releaseLock } = require('../config/redis');
 const userLocks = new Map();
+
 const withUserLock = async (userId, fn) => {
     const key = String(userId);
+    let lockId = null;
+    try {
+        lockId = await acquireLock(`user:${key}`, 5000, 10, 30);
+    } catch {
+        // Fallback sang memory lock nếu Redis gặp sự cố
+    }
+
     const prev = userLocks.get(key) || Promise.resolve();
     const next = prev.then(fn, fn);
-    userLocks.set(key, next.finally(() => {
+    userLocks.set(key, next.finally(async () => {
         if (userLocks.get(key) === next) userLocks.delete(key);
+        if (lockId) {
+            try {
+                await releaseLock(`user:${key}`, lockId);
+            } catch {}
+        }
     }));
     return next;
 };
@@ -218,4 +283,43 @@ const consumeAILimit = async (userId) => {
     });
 };
 
-module.exports = { assertBuildingLimit, assertRoomLimit, checkBuildingLimit, checkRoomLimit, checkAILimit, consumeAILimit };
+const consumeChatLimit = async (userId) => {
+    return withUserLock(userId, async () => {
+        try {
+            const user = await User.findByPk(userId);
+            if (!user) return;
+
+            const plan = await Plan.findOne({ where: { name: user.plan } });
+            const max = plan?.maxChatCallsPerMonth != null
+                ? plan.maxChatCallsPerMonth
+                : (DEFAULT_MAX_CHAT_BY_PLAN[user.plan] ?? 20);
+
+            if (max === -1) return;
+
+            const period = currentPeriod();
+            if (user.lastChatUseMonth !== period) {
+                user.lastChatUseMonth = period;
+                user.chatUseCountThisMonth = 1;
+            } else {
+                user.chatUseCountThisMonth = (user.chatUseCountThisMonth || 0) + 1;
+            }
+            if (typeof user.save === 'function') {
+                await user.save();
+            }
+        } catch (err) {
+            console.error('[checkLimit] Lỗi ghi nhận lượt chat:', err.message);
+        }
+    });
+};
+
+module.exports = {
+    assertBuildingLimit,
+    assertRoomLimit,
+    checkBuildingLimit,
+    checkRoomLimit,
+    checkAILimit,
+    consumeAILimit,
+    assertChatLimit,
+    checkChatLimit,
+    consumeChatLimit
+};

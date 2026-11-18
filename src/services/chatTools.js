@@ -665,10 +665,15 @@ const CHAT_TOOLS = {
             }
         },
         async run(user, params, { adminService: service = adminService } = {}) {
-            const stats = await service.getSystemStats();
+            const raw = await service.getSystemStats();
+            const s = raw?.stats || raw || {};
+            const totalLandlords = s.totalLandlords ?? s.landlordCount ?? 0;
+            const totalRevenue = Number(s.totalRevenue || 0);
+            const mrr = Number(s.mrr ?? s.estimatedMrr ?? 0);
             return {
-                stats,
-                message: `Chỉ số nền tảng: Tổng số chủ nhà: ${stats.totalLandlords || 0}, Doanh thu thực thu: ${Number(stats.totalRevenue || 0).toLocaleString("vi-VN")} VNĐ, MRR: ${Number(stats.mrr || 0).toLocaleString("vi-VN")} VNĐ.`
+                stats: { ...s, totalLandlords, totalRevenue, mrr },
+                packages: raw?.packages,
+                message: `Chỉ số nền tảng: Tổng số chủ nhà: ${totalLandlords}, Doanh thu thực thu: ${totalRevenue.toLocaleString("vi-VN")} VNĐ, MRR: ${mrr.toLocaleString("vi-VN")} VNĐ.`
             };
         }
     },

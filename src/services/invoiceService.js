@@ -8,7 +8,15 @@ const User = require('../models/User');
 const SePayEvent = require('../models/SePayEvent');
 const AdminLog = require('../models/AdminLog');
 const telegramService = require('../utils/telegramService');
-const { createError } = require('../utils/errors');
+const cacheHelper = require('../utils/cacheHelper');
+const { createError, isOfflineOrMockTxError } = require('../utils/errors');
+
+const REVENUE_CACHE_TTL_SEC = 300;
+const invalidateRevenueStatsCache = async (landlordId) => {
+    if (!landlordId) return;
+    await cacheHelper.delByPrefix(`cache:stats:revenue:${landlordId}:`);
+};
+exports.invalidateRevenueStatsCache = invalidateRevenueStatsCache;
 const { systemBank } = require('../utils/bank');
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
@@ -175,7 +183,8 @@ exports.generateInvoice = async (arg1, reqLandlordId = null, options = {}) => {
 
     const eTotal = Math.max(0, eData.usage * parseFloat(contract.electricityPrice || 0));
     const wTotal = Math.max(0, wData.usage * parseFloat(contract.waterPrice || 0));
-    const sTotal = parseFloat(contract.internetPrice || 0) + parseFloat(contract.cleaningPrice || 0);
+    const numTenants = Math.max(1, parseInt(contract.numTenants, 10) || 1);
+    const sTotal = parseFloat(contract.internetPrice || 0) + parseFloat(contract.cleaningPrice || 0) * numTenants;
 
     // Quét các yêu cầu sửa chữa do khách thuê chịu phí chưa kết chuyển vào hóa đơn
     const SupportRequest = require('../models/SupportRequest');
@@ -191,7 +200,33 @@ exports.generateInvoice = async (arg1, reqLandlordId = null, options = {}) => {
     const rent = roomCharge.amount;
     const grandTotal = Math.max(0, rent + eTotal + wTotal + sTotal + repairFee);
 
+    const purgeSoftDeletedInvoice = async (t) => {
+        try {
+            const softDeleted = await Invoice.findOne({
+                where: { roomId, month, year, deletedAt: { [Op.ne]: null } },
+                paranoid: false,
+                transaction: t,
+            });
+            if (softDeleted) {
+                if (typeof softDeleted.destroy === 'function') {
+                    await softDeleted.destroy({ force: true, transaction: t });
+                } else {
+                    await Invoice.destroy({
+                        where: { id: softDeleted.id },
+                        force: true,
+                        transaction: t,
+                    });
+                }
+            }
+        } catch (cleanupErr) {
+            if (!isOfflineOrMockTxError(cleanupErr, t)) throw cleanupErr;
+        }
+    };
+
     const createInvoiceWithQr = async (t) => {
+        // Xóa cứng hóa đơn đã xóa mềm cùng kỳ (nếu có) trước khi chèn bản mới để tránh kẹt unique index
+        await purgeSoftDeletedInvoice(t);
+
         const created = await Invoice.create({
             roomId,
             landlordId,
@@ -292,6 +327,17 @@ exports.generateInvoice = async (arg1, reqLandlordId = null, options = {}) => {
         await sendTelegramNotification();
     }
 
+    await invalidateRevenueStatsCache(landlordId);
+
+    try {
+        const sseService = require('./sseService');
+        const ssePayload = { invoiceId: invoice.id, roomId, roomNumber: room.roomNumber, month, year, totalAmount: grandTotal };
+        if (contract.tenantId) sseService.sendToUser(contract.tenantId, 'invoice_created', ssePayload);
+        if (landlordId) sseService.sendToUser(landlordId, 'invoice_created', ssePayload);
+    } catch {
+        // Non-blocking
+    }
+
     return {
         message: `Xuất hóa đơn tháng ${month}/${year} thành công`,
         invoice: {
@@ -300,6 +346,84 @@ exports.generateInvoice = async (arg1, reqLandlordId = null, options = {}) => {
             qrCode: qrCodeUrl,
             total: grandTotal,
         },
+    };
+};
+
+// 1B. XUẤT HÓA ĐƠN HÀNG LOẠT CHO NHIỀU PHÒNG / CẢ TÒA NHÀ
+exports.generateBulkInvoices = async (landlordId, { buildingId, month: rawMonth, year: rawYear, roomIds } = {}) => {
+    const month = rawMonth === null || rawMonth === '' ? NaN : Number(rawMonth);
+    const year = rawYear === null || rawYear === '' ? NaN : Number(rawYear);
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+        throw createError(400, "Tháng phải là số nguyên từ 1 đến 12");
+    }
+    if (!Number.isInteger(year) || year < 1) {
+        throw createError(400, "Năm không hợp lệ");
+    }
+
+    const buildingWhere = buildingId ? { id: Number(buildingId), landlordId } : { landlordId };
+    const buildings = await Building.findAll({ where: buildingWhere, attributes: ['id', 'landlordId'] });
+    if (buildingId && buildings.length === 0) {
+        throw createError(404, "Không tìm thấy tòa nhà hoặc bạn không có quyền truy cập");
+    }
+
+    const buildingIds = buildings.map((b) => b.id);
+    if (buildingIds.length === 0) {
+        return {
+            message: `Chưa có tòa nhà nào để xuất hóa đơn kỳ ${month}/${year}`,
+            summary: { total: 0, createdCount: 0, skippedCount: 0, failedCount: 0 },
+            created: [],
+            skipped: [],
+            failed: [],
+        };
+    }
+
+    const roomWhere = { buildingId: { [Op.in]: buildingIds } };
+    if (Array.isArray(roomIds) && roomIds.length > 0) {
+        const parsedRoomIds = roomIds.map(Number).filter(Number.isFinite);
+        if (parsedRoomIds.length > 0) {
+            roomWhere.id = { [Op.in]: parsedRoomIds };
+        }
+    }
+
+    const rooms = await Room.findAll({
+        where: roomWhere,
+        attributes: ['id', 'roomNumber', 'buildingId'],
+        order: [['roomNumber', 'ASC']],
+    });
+
+    const created = [];
+    const skipped = [];
+    const failed = [];
+
+    for (const r of rooms) {
+        try {
+            const res = await exports.generateInvoice({ roomId: r.id, month, year }, landlordId);
+            created.push({
+                roomId: r.id,
+                roomNumber: r.roomNumber,
+                invoiceId: res?.invoice?.id,
+                totalAmount: Number(res?.invoice?.total ?? res?.invoice?.totalAmount ?? 0),
+            });
+        } catch (err) {
+            if (err?.statusCode === 409 || err?.statusCode === 404) {
+                skipped.push({ roomId: r.id, roomNumber: r.roomNumber, reason: err.message });
+            } else {
+                failed.push({ roomId: r.id, roomNumber: r.roomNumber, reason: err?.message || 'Lỗi không xác định' });
+            }
+        }
+    }
+
+    return {
+        message: `Đã xử lý xuất hóa đơn hàng loạt kỳ ${month}/${year}: ${created.length} thành công, ${skipped.length} bỏ qua, ${failed.length} lỗi`,
+        summary: {
+            total: rooms.length,
+            createdCount: created.length,
+            skippedCount: skipped.length,
+            failedCount: failed.length,
+        },
+        created,
+        skipped,
+        failed,
     };
 };
 
@@ -358,6 +482,13 @@ exports.updatePaymentStatus = async (
             invoice.landlordId = ownerLandlordId;
         }
         await invoice.save(txOpt);
+        await invalidateRevenueStatsCache(ownerLandlordId || landlordId);
+        try {
+            const sseService = require('./sseService');
+            const payload = { invoiceId: invoice.id, roomId: invoice.roomId, status: invoice.status, isPaid: false, paidAmount: invoice.paidAmount };
+            if (invoice.tenantId) sseService.sendToUser(invoice.tenantId, 'invoice_paid', payload);
+            if (ownerLandlordId || landlordId) sseService.sendToUser(ownerLandlordId || landlordId, 'invoice_paid', payload);
+        } catch {}
         return {
             message: "Đã ghi nhận thanh toán một phần",
             isPaid: false,
@@ -405,6 +536,14 @@ exports.updatePaymentStatus = async (
         invoice.landlordId = ownerLandlordId;
     }
     await invoice.save(txOpt);
+    await invalidateRevenueStatsCache(ownerLandlordId || landlordId);
+
+    try {
+        const sseService = require('./sseService');
+        const payload = { invoiceId: invoice.id, roomId: invoice.roomId, status: invoice.status, isPaid: invoice.isPaid, paidAmount: invoice.paidAmount };
+        if (invoice.tenantId) sseService.sendToUser(invoice.tenantId, 'invoice_paid', payload);
+        if (ownerLandlordId || landlordId) sseService.sendToUser(ownerLandlordId || landlordId, 'invoice_paid', payload);
+    } catch {}
 
     if (isPaid) {
         try {
@@ -504,12 +643,24 @@ exports.deleteInvoice = async (invoiceId, landlordId) => {
         throw createError(409, "Đang có giao dịch SePay liên quan đến hóa đơn này, không thể xóa.");
     }
 
+    // Gỡ liên kết các yêu cầu sửa chữa khỏi hóa đơn bị hủy để có thể kết chuyển vào hóa đơn xuất lại
+    const SupportRequest = require('../models/SupportRequest');
+    try {
+        await SupportRequest.update(
+            { invoiceId: null },
+            { where: { invoiceId: invoice.id } }
+        );
+    } catch (unlinkErr) {
+        if (!isOfflineOrMockTxError(unlinkErr, null)) throw unlinkErr;
+    }
+
     invoice.status = 'voided';
     invoice.deletedAt = new Date();
     if (typeof invoice.save === 'function') {
         await invoice.save();
     }
     await invoice.destroy();
+    await invalidateRevenueStatsCache(owner || landlordId);
     return { message: `Đã xóa hóa đơn tháng ${invoice.month}/${invoice.year}` };
 };
 
@@ -521,7 +672,9 @@ exports.getRevenueStats = async (landlordId, { month, year }) => {
 
     const numericYear = Number(year);
     const numericMonth = month && month !== 'all' ? Number(month) : null;
+    const cacheKey = `cache:stats:revenue:${landlordId}:${numericYear}:${numericMonth || 'all'}`;
 
+    return cacheHelper.getOrSet(cacheKey, REVENUE_CACHE_TTL_SEC, async () => {
     // Lấy toàn bộ hóa đơn thuộc các tòa nhà của landlord này trong năm chỉ định để tính cả kỳ và trend 12 tháng
     const allInvoicesInYear = await Invoice.findAll({
         where: { year: numericYear },
@@ -574,6 +727,8 @@ exports.getRevenueStats = async (landlordId, { month, year }) => {
 
     let totalExpected = 0;
     let totalCollected = 0;
+    let overpaidAmount = 0;
+    let recognizedRevenue = 0;
     let unpaidAmount = 0;
     // T2.11: tiền cấn trừ cọc khi thanh lý không phải tiền mới thu vào, tách riêng
     let depositOffset = 0;
@@ -588,10 +743,18 @@ exports.getRevenueStats = async (landlordId, { month, year }) => {
             // mặc định 0 nên fallback về totalAmount để không tụt doanh thu.
             const collected = paid > 0 ? paid : amt;
             totalCollected += collected;
+            if (paid > amt) {
+                overpaidAmount += (paid - amt);
+            }
+            recognizedRevenue += Math.min(collected, amt);
             if (inv.paymentMethod === 'deposit') depositOffset += collected;
         } else {
             if (paid > 0) {
                 totalCollected += paid;
+                if (paid > amt) {
+                    overpaidAmount += (paid - amt);
+                }
+                recognizedRevenue += Math.min(paid, amt);
                 if (inv.paymentMethod === 'deposit') depositOffset += paid;
             }
             unpaidAmount += Math.max(0, amt - paid);
@@ -667,6 +830,8 @@ exports.getRevenueStats = async (landlordId, { month, year }) => {
         stats: {
             totalExpected,
             totalCollected,
+            overpaidAmount,
+            recognizedRevenue,
             cashCollected: totalCollected - depositOffset,
             depositOffset,
             unpaidAmount,
@@ -680,4 +845,5 @@ exports.getRevenueStats = async (landlordId, { month, year }) => {
             trend12Months
         },
     };
+    });
 };

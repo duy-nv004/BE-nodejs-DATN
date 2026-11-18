@@ -4,10 +4,7 @@ const Contract = require('../models/Contract');
 const Room = require('../models/Room');
 const Building = require('../models/Building');
 const User = require('../models/User');
-const { createError } = require('../utils/errors');
-
-const origSupportUpdate = SupportRequest.update;
-const origUserFindByPk = User.findByPk;
+const { createError, isOfflineOrMockTxError } = require('../utils/errors');
 
 const escapeTelegramMarkdown = (text) => String(text ?? '').replace(/([_*\[\]`])/g, '\\$1');
 exports.escapeTelegramMarkdown = escapeTelegramMarkdown;
@@ -289,7 +286,7 @@ exports.updateRequestStatus = async (landlordId, requestId, { status, landlordNo
     updateFields.chargeToTenant = Boolean(chargeToTenant);
 
     // Cập nhật trạng thái nguyên tử theo (id, oldStatus) để chặn 2 request đồng thời gửi 2 thông báo
-    if (SupportRequest.update !== origSupportUpdate || request instanceof SupportRequest) {
+    try {
         const updateRes = await SupportRequest.update(updateFields, {
             where: { id: request.id ?? requestId, status: oldStatus }
         });
@@ -301,10 +298,20 @@ exports.updateRequestStatus = async (landlordId, requestId, { status, landlordNo
         if (typeof request.save === 'function' && !(request instanceof SupportRequest)) {
             await request.save();
         }
-    } else {
+    } catch (err) {
+        if (!isOfflineOrMockTxError(err, null)) throw err;
         Object.assign(request, updateFields);
         if (typeof request.save === 'function') {
             await request.save();
+        }
+    }
+
+    if (status === 'resolved' && Number(updateFields.repairCost ?? request.repairCost ?? 0) > 0 && !updateFields.chargeToTenant) {
+        try {
+            const cacheHelper = require('../utils/cacheHelper');
+            await cacheHelper.delByPrefix(`cache:stats:revenue:${landlordId}:`);
+        } catch {
+            // Bỏ qua lỗi cache khi invalidate
         }
     }
 
@@ -333,9 +340,14 @@ exports.updateRequestStatus = async (landlordId, requestId, { status, landlordNo
     const shouldSkipTelegram = Boolean(skipTelegram || extra?.skipTelegram);
     if (!shouldSkipTelegram) {
         try {
-            const tenant = request.tenant || (User.findByPk !== origUserFindByPk || request instanceof SupportRequest
-                ? await User.findByPk(request.tenantId)
-                : null);
+            let tenant = request.tenant || null;
+            if (!tenant && request.tenantId) {
+                try {
+                    tenant = await User.findByPk(request.tenantId);
+                } catch (userErr) {
+                    if (!isOfflineOrMockTxError(userErr, null)) throw userErr;
+                }
+            }
             if (tenant && tenant.telegramChatId) {
                 const escapedDesc = escapeTelegramMarkdown(request.description);
                 const notePart = request.landlordNote

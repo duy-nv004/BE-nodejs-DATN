@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const notificationService = require('./notificationService');
+const userCache = require('../utils/userCache');
 const { Op } = require('sequelize');
 const { todayVN, isExpiredVN, daysRemainingVN, addPlanDaysVN } = require('../utils/dateVN');
 const { normalizeCycle, planPriceVnd, buildTransferCode } = require('../utils/planPricing');
@@ -68,7 +69,20 @@ const syncExpiredPlan = async (user, now = new Date()) => {
     user.planExpiresAt = null;
     user.billingCycle = null;
     user.planSource = null;
-    await user.save();
+
+    if (typeof user.save === 'function') {
+        await user.save();
+    } else if (user.id && typeof User.update === 'function') {
+        // Trường hợp req.user là plain JSON object đọc từ Redis userCache
+        await User.update(
+            { plan: 'free', planExpiresAt: null, billingCycle: null, planSource: null },
+            { where: { id: user.id } }
+        );
+    }
+
+    if (user.id) {
+        await userCache.del(user.id);
+    }
 
     return { expired: true, oldPlan };
 };

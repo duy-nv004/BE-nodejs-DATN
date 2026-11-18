@@ -6,7 +6,9 @@ const User = require('../models/User');
 const MeterReading = require('../models/MeterReading');
 const DepositRecord = require('../models/DepositRecord');
 const sequelize = require('../config/db');
-const { createError } = require('../utils/errors');
+const { createError, isOfflineOrMockTxError } = require('../utils/errors');
+const storageService = require('./storageService');
+const sseService = require('./sseService');
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
 const Role = require('../models/Role');
@@ -18,6 +20,7 @@ const invoiceService = require('./invoiceService');
 const depositService = require('./depositService');
 const ContractRequest = require('../models/ContractRequest');
 const ContractOccupant = require('../models/ContractOccupant');
+const RoomBooking = require('../models/RoomBooking');
 
 // Các trường tiền / chỉ số phải là số hữu hạn >= 0 (bỏ qua nếu không gửi)
 const NON_NEGATIVE_FIELDS = {
@@ -67,6 +70,27 @@ const assertCccdImages = (files = {}) => {
         throw createError(400, 'Vui lòng tải lên đủ ảnh CCCD mặt trước và mặt sau để khai báo tạm trú');
     }
 };
+
+// Cho phép 0/2 ảnh (khách tự tải lúc ký) hoặc 2/2 ảnh; chặn 1/2 ảnh thiếu mặt còn lại
+const resolveOptionalCccdImages = (files = {}) => {
+    const hasFront = !!files?.cccdFront?.[0];
+    const hasBack = !!files?.cccdBack?.[0];
+    if (hasFront !== hasBack) {
+        throw createError(400, 'Vui lòng tải lên đủ ảnh CCCD mặt trước và mặt sau (hoặc bỏ trống cả 2 để khách tự tải khi ký)');
+    }
+    return {
+        front: files?.cccdFront?.[0]?.filename || null,
+        back: files?.cccdBack?.[0]?.filename || null,
+    };
+};
+
+const toCccdSignedUrl = async (filename) => {
+    if (!filename) return null;
+    if (/^(https?:|\/api\/)/i.test(filename)) return filename;
+    const cleanKey = String(filename).replace(/^\/?(uploads\/)?cccd\//i, '');
+    return storageService.getSignedUrl(`cccd/${cleanKey}`);
+};
+exports.toCccdSignedUrl = toCccdSignedUrl;
 
 // Validate ngày và số của hợp đồng (tạo mới + gia hạn). `room` kiểm tra numTenants <= capacity.
 const validateContractNumbers = (data, room = null) => {
@@ -127,7 +151,7 @@ exports.createContract = async (landlordId, data, files = {}) => {
         landlordSignature,
         tenantCccd, tenantDob, tenantHometown, tenantPhone,
         numTenants, paymentDay, inventory, rentPrice, firstLastMonthPolicy,
-        meterReset, electricityReset, waterReset
+        meterReset, electricityReset, waterReset, bookingId
     } = data;
 
     // T2.3: không gửi thì giữ tròn tháng như trước
@@ -151,8 +175,8 @@ exports.createContract = async (landlordId, data, files = {}) => {
     }
     validateSignatureBase64(landlordSignature, 'Chữ ký đại diện Bên A');
 
-    // Ảnh CCCD 2 mặt là minh chứng khai báo tạm trú của khách chính (chép sang dòng người ở khi ký)
-    assertCccdImages(files);
+    // Ảnh CCCD ở bước khởi tạo là tùy chọn (khách thuê sẽ tự tải lên lúc ký), nhưng nếu gửi phải đủ cả 2 mặt
+    const cccdImages = resolveOptionalCccdImages(files);
 
     // Xác nhận xem phòng có thuộc sở hữu của landlord hay không
     const room = await Room.findByPk(roomId, {
@@ -163,8 +187,27 @@ exports.createContract = async (landlordId, data, files = {}) => {
         throw createError(404, 'Phòng trọ không tồn tại hoặc bạn không có quyền gán hợp đồng');
     }
 
-    // Chỉ cho tạo hợp đồng trên phòng thực sự trống.
-    if (room.status !== 'empty') {
+    let linkedBooking = null;
+    if (!isBlank(bookingId)) {
+        linkedBooking = await RoomBooking.findByPk(bookingId);
+        if (!linkedBooking || linkedBooking.landlordId !== landlordId || Number(linkedBooking.roomId) !== Number(roomId)) {
+            throw createError(404, 'Yêu cầu đặt phòng không tồn tại hoặc không khớp với phòng đã chọn');
+        }
+        if (!['pending', 'confirmed', 'deposit_paid'].includes(linkedBooking.status)) {
+            throw createError(400, 'Yêu cầu đặt phòng này đã được xử lý hoặc đã lập hợp đồng trước đó');
+        }
+    }
+
+    // Chỉ cho tạo hợp đồng trên phòng trống, hoặc phòng đang 'reserved' do đặt cọc từ booking hợp lệ (chưa có HĐ chờ ký/hiệu lực).
+    const allowReservedFromBooking = !!linkedBooking && linkedBooking.status === 'deposit_paid' && room.status === 'reserved';
+    if (allowReservedFromBooking) {
+        const competing = await Contract.findOne({
+            where: { roomId, status: ['active', 'pending_tenant_signature'] }
+        });
+        if (competing) {
+            throw createError(400, `Phòng ${room.roomNumber} hiện đã có hợp đồng đang hoạt động hoặc chờ ký.`);
+        }
+    } else if (room.status !== 'empty') {
         throw createError(400, `Phòng ${room.roomNumber} hiện không ở trạng thái trống `
             + `(đang là "${room.status}"). Vui lòng kiểm tra hợp đồng hiện có trước khi tạo mới.`);
     }
@@ -186,9 +229,12 @@ exports.createContract = async (landlordId, data, files = {}) => {
         }
     }
 
-    // Chỉ gán HĐ cho tài khoản khách thuê đang hoạt động do chính chủ nhà này quản lý
+    // Chỉ gán HĐ cho tài khoản khách thuê đang hoạt động do chính chủ nhà này quản lý (hoặc khách được liên kết từ booking)
+    const tenantWhere = linkedBooking && Number(linkedBooking.tenantId) === Number(tenantId)
+        ? { id: tenantId, status: 'active' }
+        : { id: tenantId, ownerId: landlordId, status: 'active' };
     const tenant = await User.findOne({
-        where: { id: tenantId, ownerId: landlordId, status: 'active' },
+        where: tenantWhere,
         include: [{ model: Role, as: 'roleData', where: { name: 'tenant' } }]
     });
     if (!tenant) {
@@ -198,7 +244,11 @@ exports.createContract = async (landlordId, data, files = {}) => {
     // Tạo hợp đồng ở trạng thái CHỜ KHÁCH KÝ.
     const contract = await sequelize.transaction(async (t) => {
         const lockedRoom = await Room.findByPk(roomId, { lock: true, transaction: t });
-        if (!lockedRoom || lockedRoom.status !== 'empty') {
+        const lockedOk = !!lockedRoom && (
+            lockedRoom.status === 'empty' ||
+            (allowReservedFromBooking && lockedRoom.status === 'reserved')
+        );
+        if (!lockedOk) {
             throw createError(409, `Phòng ${room.roomNumber} vừa được giữ chỗ bởi một hợp đồng khác. Vui lòng tải lại trang.`);
         }
 
@@ -228,8 +278,8 @@ exports.createContract = async (landlordId, data, files = {}) => {
             tenantDob,
             tenantHometown,
             tenantPhone,
-            tenantCccdFront: files.cccdFront?.[0]?.filename || null,
-            tenantCccdBack: files.cccdBack?.[0]?.filename || null,
+            tenantCccdFront: cccdImages.front,
+            tenantCccdBack: cccdImages.back,
             numTenants: numTenants || 1,
             paymentDay: paymentDay || 30,
             firstLastMonthPolicy: isBlank(firstLastMonthPolicy) ? 'full' : firstLastMonthPolicy,
@@ -241,17 +291,50 @@ exports.createContract = async (landlordId, data, files = {}) => {
         room.status = 'reserved';
         await room.save({ transaction: t });
 
-        // Ghi nhận tiền cọc nếu có
-        if (deposit && Number(deposit) > 0) {
+        // Nếu booking đặt cọc đã có DepositRecord (từ SePay webhook) thì liên kết với HĐ vừa tạo, tránh tạo trùng
+        let linkedDeposit = null;
+        if (linkedBooking && typeof DepositRecord.findOne === 'function') {
+            try {
+                linkedDeposit = await DepositRecord.findOne({
+                    where: { bookingId: linkedBooking.id },
+                    transaction: t
+                });
+            } catch (err) {
+                if (!isOfflineOrMockTxError(err, t)) throw err;
+            }
+        }
+        if (linkedDeposit) {
+            linkedDeposit.contractId = created.id;
+            await linkedDeposit.save({ transaction: t });
+        } else if (deposit && Number(deposit) > 0) {
             await DepositRecord.create({
                 contractId: created.id,
+                bookingId: linkedBooking?.id || null,
                 amount: deposit,
                 status: 'held'
             }, { transaction: t });
         }
 
+        if (linkedBooking) {
+            linkedBooking.status = 'contract_created';
+            linkedBooking.contractId = created.id;
+            await linkedBooking.save({ transaction: t });
+        }
+
+        if (tenant && !tenant.ownerId && typeof tenant.save === 'function') {
+            tenant.ownerId = landlordId;
+            await tenant.save({ transaction: t });
+        }
+
         return created;
     });
+
+    try {
+        sseService.sendToUser(tenantId, 'contract_created', { contractId: contract.id, roomId, roomNumber: room.roomNumber });
+        sseService.sendToUser(landlordId, 'contract_created', { contractId: contract.id, roomId, roomNumber: room.roomNumber });
+    } catch {
+        // Non-blocking
+    }
 
     return contract;
 };
@@ -262,10 +345,11 @@ exports.signContractByTenant = async (tenantId, contractId, tenantSignature, met
         throw createError(400, 'Vui lòng cung cấp chữ ký điện tử để hoàn tất ký hợp đồng');
     }
     validateSignatureBase64(tenantSignature, 'Chữ ký điện tử');
+    const uploadedCccd = resolveOptionalCccdImages(meta?.files || {});
 
     const contract = await Contract.findOne({
         where: { id: contractId, tenantId, status: 'pending_tenant_signature' },
-        include: [{ model: Room, as: 'room' }]
+        include: [{ model: Room, as: 'room', include: [{ model: Building, as: 'building' }] }]
     });
 
     if (!contract) {
@@ -294,6 +378,18 @@ exports.signContractByTenant = async (tenantId, contractId, tenantSignature, met
 
         // Bản gia hạn: hợp đồng gốc vẫn active tới lúc này, giờ mới chốt sang 'renewed'
         const previous = await findPreviousActive(contract, t);
+
+        const effFront = uploadedCccd.front || contract.tenantCccdFront || null;
+        const effBack = uploadedCccd.back || contract.tenantCccdBack || null;
+        if (!previous && (!effFront || !effBack)) {
+            throw createError(400, 'Vui lòng tải lên đủ ảnh CCCD mặt trước và mặt sau trước khi ký hợp đồng');
+        }
+
+        contract.tenantCccdFront = effFront;
+        contract.tenantCccdBack = effBack;
+        if (!isBlank(meta?.tenantCccd)) contract.tenantCccd = String(meta.tenantCccd).trim();
+        if (!isBlank(meta?.tenantDob)) contract.tenantDob = String(meta.tenantDob).trim();
+        if (!isBlank(meta?.tenantHometown)) contract.tenantHometown = String(meta.tenantHometown).trim();
 
         contract.tenantSignature = tenantSignature;
         contract.tenantSignedAt = new Date();
@@ -367,6 +463,16 @@ exports.signContractByTenant = async (tenantId, contractId, tenantSignature, met
         }
     });
 
+    try {
+        const landlordId = contract.room?.building?.landlordId;
+        if (landlordId) {
+            sseService.sendToUser(landlordId, 'contract_signed', { contractId: contract.id, roomId: contract.roomId, tenantId });
+        }
+        sseService.sendToUser(tenantId, 'contract_signed', { contractId: contract.id, roomId: contract.roomId });
+    } catch {
+        // Non-blocking
+    }
+
     return contract;
 };
 
@@ -434,9 +540,17 @@ exports.cancelContractByLandlord = async (landlordId, id) => {
     };
 };
 
+const serializeContractWithSignedUrls = async (c) => {
+    const obj = c && typeof c.toJSON === 'function' ? c.toJSON() : { ...c };
+    obj.cccdFrontUrl = await toCccdSignedUrl(obj.tenantCccdFront);
+    obj.cccdBackUrl = await toCccdSignedUrl(obj.tenantCccdBack);
+    return obj;
+};
+
 // 5. LẤY DANH SÁCH HỢP ĐỒNG (Dành cho Chủ nhà)
 exports.getContracts = async (landlordId) => {
     const contracts = await Contract.findAll({
+        attributes: { exclude: ['landlordSignature', 'tenantSignature'] },
         include: [
             {
                 model: Room,
@@ -458,7 +572,7 @@ exports.getContracts = async (landlordId) => {
         ],
         order: [['createdAt', 'DESC']]
     });
-    return contracts;
+    return Promise.all(contracts.map(serializeContractWithSignedUrls));
 };
 
 // 6. CHI TIẾT HỢP ĐỒNG
@@ -487,7 +601,7 @@ exports.getContractDetail = async (landlordId, id) => {
         throw createError(404, 'Hợp đồng không tồn tại hoặc bạn không có quyền xem');
     }
 
-    return contract;
+    return serializeContractWithSignedUrls(contract);
 };
 
 // 7. THANH LÝ HỢP ĐỒNG (C1 / T1.8 / T2.6)
@@ -538,7 +652,18 @@ const computeSettlement = async (contract, body = {}, { requireReadings = false,
     });
     let readings = null;
     let finalInvoiceEstimate = null;
+    let pendingRepairFee = 0;
     if (!finalInvoice) {
+        try {
+            const SupportRequest = require('../models/SupportRequest');
+            const pendingRepairs = await SupportRequest.findAll({
+                where: { roomId, chargeToTenant: true, invoiceId: null },
+                ...txOpt
+            });
+            pendingRepairFee = (pendingRepairs || []).reduce((sum, r) => sum + Math.max(0, Number(r.repairCost || 0)), 0);
+        } catch (err) {
+            if (!isOfflineOrMockTxError(err, transaction)) throw err;
+        }
         if (isBlank(finalElectricity) || isBlank(finalWater)) {
             if (requireReadings) {
                 const err = createError(400, `Chưa có hóa đơn tháng ${month}/${year}: vui lòng nhập chỉ số cuối điện và nước`);
@@ -562,10 +687,13 @@ const computeSettlement = async (contract, body = {}, { requireReadings = false,
                 return value - (prev ? prev.readingValue : Number(initial || 0));
             };
             const fullRent = Number(contract.rentPrice ?? contract.room?.price ?? 0);
+            const numTenants = Math.max(1, parseInt(contract.numTenants, 10) || 1);
             finalInvoiceEstimate = invoiceService.computeRoomCharge(contract, fullRent, year, month, date.format('YYYY-MM-DD')).amount
                 + (await usage('electricity', readings.electricity)) * Number(contract.electricityPrice || 0)
                 + (await usage('water', readings.water)) * Number(contract.waterPrice || 0)
-                + Number(contract.internetPrice || 0) + Number(contract.cleaningPrice || 0);
+                + Number(contract.internetPrice || 0)
+                + Number(contract.cleaningPrice || 0) * numTenants
+                + pendingRepairFee;
         }
     }
 
@@ -597,7 +725,7 @@ const computeSettlement = async (contract, body = {}, { requireReadings = false,
             ? { id: finalInvoice.id, totalAmount: Number(finalInvoice.totalAmount), isPaid: finalInvoice.isPaid,
                 electricityNew: finalInvoice.electricityNew, waterNew: finalInvoice.waterNew }
             : null,
-        readings, finalInvoiceEstimate, damageAmount: damage, forfeit: !!forfeit,
+        readings, finalInvoiceEstimate, pendingRepairFee, damageAmount: damage, forfeit: !!forfeit,
         allowDebt: !!allowDebt,
         deduct,
         outstandingAmount,
@@ -1052,7 +1180,13 @@ const assertOccupantEditable = (contract) => {
 
 exports.listOccupants = async (user, contractId) => {
     await assertContractAccess(user, contractId);
-    return ContractOccupant.findAll({ where: { contractId }, order: [['isPrimary', 'DESC'], ['id', 'ASC']] });
+    const rows = await ContractOccupant.findAll({ where: { contractId }, order: [['isPrimary', 'DESC'], ['id', 'ASC']] });
+    return Promise.all(rows.map(async (r) => {
+        const obj = r && typeof r.toJSON === 'function' ? r.toJSON() : { ...r };
+        obj.cccdFrontUrl = await toCccdSignedUrl(obj.cccdFrontImage);
+        obj.cccdBackUrl = await toCccdSignedUrl(obj.cccdBackImage);
+        return obj;
+    }));
 };
 
 exports.getCccdImageName = async (user, contractId, filename) => {

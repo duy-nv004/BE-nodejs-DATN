@@ -5,7 +5,7 @@ const adminService = require('../services/adminService');
  * Tránh lặp lại try/catch ở từng handler.
  */
 const asyncHandler = (fn) => (req, res) => {
-    Promise.resolve(fn(req, res)).catch(err => {
+    return Promise.resolve(fn(req, res)).catch(err => {
         res.status(err.statusCode || 500).json({ message: err.message });
     });
 };
@@ -89,5 +89,20 @@ exports.resolveTicket = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { status, reason } = req.body;
     const result = await adminService.resolveLandlordTicket(id, status, req.user.id, { reason });
+    res.status(200).json(result);
+});
+
+// ─── Redis Cache Monitoring ─────────────────────────────────────────────────────
+
+/** Lấy trạng thái kết nối Redis và chỉ số hiệu năng cache */
+exports.getCacheStatus = asyncHandler(async (req, res) => {
+    const result = await adminService.getCacheStatus();
+    res.status(200).json(result);
+});
+
+/** Xóa bộ nhớ đệm Redis theo phạm vi */
+exports.flushCache = asyncHandler(async (req, res) => {
+    const scope = req.body?.scope || 'all';
+    const result = await adminService.flushCache(req.user.id, scope);
     res.status(200).json(result);
 });

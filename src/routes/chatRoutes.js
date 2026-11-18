@@ -3,6 +3,7 @@ const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const chatController = require('../controllers/chatController');
 const { protect } = require('../middleware/authMiddleware');
+const { checkChatLimit } = require('../middleware/checkLimit');
 
 // Giới hạn theo tài khoản (chạy sau protect nên đã có req.user) để chặn spam tốn chi phí AI
 const chatLimiter = rateLimit({
@@ -24,7 +25,7 @@ const executeLimiter = rateLimit({
     message: { message: 'Bạn xác nhận thao tác quá nhanh, vui lòng đợi một chút rồi thử lại.' }
 });
 
-router.post('/', protect, chatLimiter, chatController.chat);
+router.post('/', protect, chatLimiter, checkChatLimit, chatController.chat);
 
 // Thực thi tool sau xác nhận của người dùng (mỗi lần bấm Xác nhận = 1 call có chủ đích)
 router.post('/execute', protect, executeLimiter, chatController.execute);

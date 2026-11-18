@@ -10,12 +10,40 @@ const Notification = require('../models/Notification');
 const ContractOccupant = require('../models/ContractOccupant');
 const sequelize = require('../config/db');
 const { Op } = require('sequelize');
-const { createError } = require('../utils/errors');
+const { createError, isOfflineOrMockTxError } = require('../utils/errors');
 const { validateEmail, validatePhone } = require('../utils/validators');
 const { assertBuildingLimit, assertRoomLimit } = require('../middleware/checkLimit');
+const { inferLocationFromAddress } = require('../utils/vnLocations');
 
 /** Giá hợp lệ: số hữu hạn >= 0 (chuỗi rỗng / boolean / chữ đều bị từ chối) */
 const isValidPrice = (v) => v !== '' && v !== null && typeof v !== 'boolean' && Number.isFinite(Number(v)) && Number(v) >= 0;
+const isBlank = (v) => v === undefined || v === null || v === '';
+
+/** Parse và kiểm tra tọa độ GPS (-90..90, -180..180) */
+const parseCoordinate = (val, min, max, label) => {
+    if (isBlank(val)) return undefined;
+    const num = Number(val);
+    if (!Number.isFinite(num) || num < min || num > max) {
+        throw createError(400, `${label} phải nằm trong khoảng ${min} đến ${max}`);
+    }
+    return num;
+};
+
+/** Parse danh sách chuỗi (từ mảng hoặc JSON string) */
+const parseStringArray = (val) => {
+    if (Array.isArray(val)) return val.map((x) => String(x || '').trim()).filter(Boolean);
+    if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (!trimmed) return [];
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed.map((x) => String(x || '').trim()).filter(Boolean);
+        } catch {
+            return trimmed.split(',').map((x) => x.trim()).filter(Boolean);
+        }
+    }
+    return [];
+};
 
 /** Validate sức chứa phòng (T2.19): số nguyên từ 1 đến 50 */
 const parseCapacity = (capacity) => {
@@ -83,23 +111,93 @@ const assertRoomNumberFree = async (buildingId, roomNumber, excludeId, { transac
 };
 
 // 1. TẠO TÒA NHÀ (T1.9 & T2.1: bọc trong transaction kèm khóa dòng User)
-exports.createBuilding = async (landlordId, { name, address }) => {
+exports.createBuilding = async (landlordId, { name, address, city, district, ward, latitude, longitude }) => {
     if (!name || !address) {
         throw createError(400, 'Thiếu thông tin Tên hoặc Địa chỉ tòa nhà');
     }
+    const parsedLat = parseCoordinate(latitude, -90, 90, 'Vĩ độ (latitude)');
+    const parsedLng = parseCoordinate(longitude, -180, 180, 'Kinh độ (longitude)');
+
     return await runInTransaction(async (transaction) => {
         const txOpts = transaction ? { transaction } : {};
         const landlord = await loadLandlord(landlordId, { transaction, lock: true });
         await assertBuildingLimit(landlord, txOpts);
-        const building = await Building.create({ name, address, landlordId }, txOpts);
+        const trimmedAddress = String(address).trim();
+        const inferred = inferLocationFromAddress(trimmedAddress);
+        const resolvedCity = !isBlank(city) ? String(city).trim() : (inferred.city || null);
+        const resolvedDistrict = !isBlank(district) ? String(district).trim() : (inferred.district || null);
+        const resolvedWard = !isBlank(ward) ? String(ward).trim() : (inferred.ward || null);
+
+        const payload = {
+            name: String(name).trim(),
+            address: trimmedAddress,
+            landlordId
+        };
+        if (resolvedCity !== null || city !== undefined) payload.city = resolvedCity;
+        if (resolvedDistrict !== null || district !== undefined) payload.district = resolvedDistrict;
+        if (resolvedWard !== null || ward !== undefined) payload.ward = resolvedWard;
+        if (parsedLat !== undefined) payload.latitude = parsedLat;
+        if (parsedLng !== undefined) payload.longitude = parsedLng;
+
+        const building = await Building.create(payload, txOpts);
         // Tự động tạo bản ghi Service chứa đơn giá dịch vụ mặc định liên kết với tòa nhà
         await Service.create({ buildingId: building.id }, txOpts);
         return building;
     });
 };
 
+// 1b. CẬP NHẬT THÔNG TIN & VỊ TRÍ TÒA NHÀ
+exports.updateBuilding = async (landlordId, buildingId, { name, address, city, district, ward, latitude, longitude }) => {
+    const building = await Building.findOne({ where: { id: buildingId, landlordId } });
+    if (!building) {
+        throw createError(404, 'Tòa nhà không tồn tại hoặc bạn không có quyền cập nhật');
+    }
+
+    const parsedLat = latitude === null || latitude === '' ? null : parseCoordinate(latitude, -90, 90, 'Vĩ độ (latitude)');
+    const parsedLng = longitude === null || longitude === '' ? null : parseCoordinate(longitude, -180, 180, 'Kinh độ (longitude)');
+
+    if (name !== undefined) {
+        const trimmedName = String(name).trim();
+        if (!trimmedName) throw createError(400, 'Tên tòa nhà không được để trống');
+        building.name = trimmedName;
+    }
+    if (address !== undefined) {
+        const trimmedAddress = String(address).trim();
+        if (!trimmedAddress) throw createError(400, 'Địa chỉ tòa nhà không được để trống');
+        building.address = trimmedAddress;
+    }
+
+    const inferred = address !== undefined || city !== undefined || district !== undefined || ward !== undefined
+        ? inferLocationFromAddress(building.address)
+        : { city: '', district: '', ward: '' };
+
+    if (city !== undefined) {
+        building.city = !isBlank(city) ? String(city).trim() : (inferred.city || null);
+    } else if (address !== undefined && inferred.city) {
+        building.city = inferred.city;
+    }
+
+    if (district !== undefined) {
+        building.district = !isBlank(district) ? String(district).trim() : (inferred.district || null);
+    } else if (address !== undefined && (inferred.district || inferred.city)) {
+        building.district = inferred.district || null;
+    }
+
+    if (ward !== undefined) {
+        building.ward = !isBlank(ward) ? String(ward).trim() : (inferred.ward || null);
+    } else if (address !== undefined && (inferred.ward || inferred.district || inferred.city)) {
+        building.ward = inferred.ward || null;
+    }
+
+    if (parsedLat !== undefined) building.latitude = parsedLat;
+    if (parsedLng !== undefined) building.longitude = parsedLng;
+
+    await building.save();
+    return building;
+};
+
 // 2. TẠO PHÒNG (T1.9, T2.1, T2.19)
-exports.createRoom = async (landlordId, { roomNumber, price, capacity, area, buildingId }) => {
+exports.createRoom = async (landlordId, { roomNumber, price, capacity, area, buildingId, images, amenities, description, depositAmount }) => {
     const normalizedRoomNumber = typeof roomNumber === 'string' ? roomNumber.trim() : String(roomNumber ?? '').trim();
     // Dùng so sánh tường minh thay vì ép kiểu truthy: phòng giá 0 là hợp lệ
     // (phòng để ở ghép, phòng chưa định giá) nhưng `!price` sẽ chặn nhầm.
@@ -109,9 +207,14 @@ exports.createRoom = async (landlordId, { roomNumber, price, capacity, area, bui
     if (!isValidPrice(price)) {
         throw createError(400, 'Giá phòng phải là số không âm');
     }
+    if (!isBlank(depositAmount) && !isValidPrice(depositAmount)) {
+        throw createError(400, 'Tiền đặt cọc phòng phải là số không âm');
+    }
 
-    const resolvedCapacity = capacity !== undefined && capacity !== null ? parseCapacity(capacity) : 2;
-    const resolvedArea = area !== undefined && area !== null ? parseArea(area) : 20;
+    const resolvedCapacity = !isBlank(capacity) ? parseCapacity(capacity) : 2;
+    const resolvedArea = !isBlank(area) ? parseArea(area) : 20;
+    const normalizedImages = images !== undefined ? JSON.stringify(parseStringArray(images).slice(0, 5)) : undefined;
+    const normalizedAmenities = amenities !== undefined ? JSON.stringify(parseStringArray(amenities)) : undefined;
 
     return await runInTransaction(async (transaction) => {
         const txOpts = transaction ? { transaction } : {};
@@ -129,13 +232,19 @@ exports.createRoom = async (landlordId, { roomNumber, price, capacity, area, bui
         await assertRoomNumberFree(buildingId, normalizedRoomNumber, undefined, txOpts);
 
         try {
-            const room = await Room.create({
+            const payload = {
                 roomNumber: normalizedRoomNumber,
                 price,
                 capacity: resolvedCapacity,
                 area: resolvedArea,
                 buildingId
-            }, txOpts);
+            };
+            if (normalizedImages !== undefined) payload.images = normalizedImages;
+            if (normalizedAmenities !== undefined) payload.amenities = normalizedAmenities;
+            if (description !== undefined) payload.description = description ? String(description).trim() : null;
+            if (!isBlank(depositAmount)) payload.depositAmount = Number(depositAmount);
+
+            const room = await Room.create(payload, txOpts);
             return room;
         } catch (err) {
             if (err?.name === 'SequelizeUniqueConstraintError') {
@@ -231,7 +340,8 @@ exports.getRooms = async (arg1, arg2, arg3) => {
         }
     }
 
-    const rooms = await Room.findAll({
+    const isPaged = query && (query.page != null || query.limit != null);
+    const findOpts = {
         include: [
             {
                 model: Building,
@@ -256,12 +366,32 @@ exports.getRooms = async (arg1, arg2, arg3) => {
             readingInclude
         ],
         order: [['roomNumber', 'ASC']]
-    });
+    };
+
+    if (isPaged) {
+        const page = Math.max(1, parseInt(query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
+        const offset = (page - 1) * limit;
+        const { count, rows } = await Room.findAndCountAll({
+            ...findOpts,
+            limit,
+            offset,
+            distinct: true
+        });
+        return {
+            data: rows,
+            total: count,
+            page,
+            totalPages: Math.ceil(count / limit)
+        };
+    }
+
+    const rooms = await Room.findAll(findOpts);
     return rooms;
 };
 
-// 7. CẬP NHẬT PHÒNG (T2.1 & T2.19)
-exports.updateRoom = async (landlordId, roomId, { roomNumber, price, capacity, area, status }) => {
+// 7. CẬP NHẬT PHÒNG (T2.1 & T2.19 & Public room media/deposit)
+exports.updateRoom = async (landlordId, roomId, { roomNumber, price, capacity, area, status, images, existingImages, amenities, description, depositAmount }) => {
     const room = await Room.findByPk(roomId, {
         include: [{ model: Building, as: 'building' }]
     });
@@ -273,6 +403,9 @@ exports.updateRoom = async (landlordId, roomId, { roomNumber, price, capacity, a
     // Kiểm tra hết trước khi gán để lỗi không để lại instance sửa dở
     if (price !== undefined && !isValidPrice(price)) {
         throw createError(400, 'Giá phòng phải là số không âm');
+    }
+    if (!isBlank(depositAmount) && !isValidPrice(depositAmount)) {
+        throw createError(400, 'Tiền đặt cọc phòng phải là số không âm');
     }
 
     let trimmedRoomNumber;
@@ -337,6 +470,15 @@ exports.updateRoom = async (landlordId, roomId, { roomNumber, price, capacity, a
     if (price !== undefined) room.price = price;
     if (parsedCap !== undefined) room.capacity = parsedCap;
     if (parsedAreaVal !== undefined) room.area = parsedAreaVal;
+    if (description !== undefined) room.description = description ? String(description).trim() : null;
+    if (!isBlank(depositAmount)) room.depositAmount = Number(depositAmount);
+    if (amenities !== undefined) room.amenities = JSON.stringify(parseStringArray(amenities));
+    if (existingImages !== undefined || images !== undefined) {
+        const kept = existingImages !== undefined ? parseStringArray(existingImages) : parseStringArray(room.images);
+        const added = images !== undefined ? parseStringArray(images) : [];
+        const merged = Array.from(new Set([...kept, ...added])).slice(0, 5);
+        room.images = JSON.stringify(merged);
+    }
 
     try {
         await room.save();
@@ -389,8 +531,9 @@ exports.deleteRoom = async (landlordId, roomId) => {
 };
 
 // 9. LẤY DANH SÁCH KHÁCH THUÊ
-exports.getTenants = async (landlordId) => {
-    const tenants = await User.findAll({
+exports.getTenants = async (landlordId, query = {}) => {
+    const isPaged = query && (query.page != null || query.limit != null);
+    const findOpts = {
         where: { ownerId: landlordId },
         attributes: ['id', 'name', 'phone', 'email', 'telegramChatId', 'status', 'lockReason', 'createdAt'],
         // HĐ active kèm người ở để FE hiện "đã khai báo tạm trú / tổng" (C6)
@@ -398,11 +541,37 @@ exports.getTenants = async (landlordId) => {
             model: Contract, as: 'rentals', required: false, where: { status: 'active' }, attributes: ['id', 'roomId'],
             include: [
                 { model: ContractOccupant, as: 'occupants', attributes: ['id', 'residenceStatus'] },
-                { model: Room, as: 'room', attributes: ['id', 'roomNumber'] }
+                {
+                    model: Room,
+                    as: 'room',
+                    attributes: ['id', 'roomNumber'],
+                    required: true,
+                    include: [{ model: Building, as: 'building', required: true, where: { landlordId }, attributes: [] }]
+                }
             ]
         }],
         order: [['createdAt', 'DESC']]
-    });
+    };
+
+    if (isPaged) {
+        const page = Math.max(1, parseInt(query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
+        const offset = (page - 1) * limit;
+        const { count, rows } = await User.findAndCountAll({
+            ...findOpts,
+            limit,
+            offset,
+            distinct: true
+        });
+        return {
+            data: rows,
+            total: count,
+            page,
+            totalPages: Math.ceil(count / limit)
+        };
+    }
+
+    const tenants = await User.findAll(findOpts);
     return tenants;
 };
 
@@ -419,6 +588,30 @@ exports.updateTenant = async (landlordId, tenantId, { name, phone, email, status
 
     if (email) email = validateEmail(email);
     if (phone) phone = validatePhone(phone);
+
+    try {
+        const otherActiveContracts = await Contract.count({
+            where: { tenantId: tenant.id, status: 'active' },
+            include: [{
+                model: Room,
+                as: 'room',
+                required: true,
+                include: [{
+                    model: Building,
+                    as: 'building',
+                    required: true,
+                    where: { landlordId: { [Op.ne]: landlordId } }
+                }]
+            }]
+        });
+        if (otherActiveContracts > 0) {
+            throw createError(403, 'Khách thuê đang có hợp đồng hiệu lực với chủ nhà khác, không thể chỉnh sửa hồ sơ gốc');
+        }
+    } catch (err) {
+        if (err?.statusCode) throw err;
+        const isUnbootstrappedAssoc = err?.name === 'SequelizeEagerLoadingError' && !Contract.associations?.room;
+        if (!isUnbootstrappedAssoc && !isOfflineOrMockTxError(err, null)) throw err;
+    }
 
     if (email && email !== tenant.email) {
         const checkEmail = await User.findOne({ where: { email } });

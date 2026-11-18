@@ -7,13 +7,18 @@ const Plan = require('../models/Plan');
 const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const AdminLog = require('../models/AdminLog');
 const SePayEvent = require('../models/SePayEvent');
+const RoomBooking = require('../models/RoomBooking');
+const DepositRecord = require('../models/DepositRecord');
 const Role = require('../models/Role');
 const notificationService = require('./notificationService');
 const invoiceService = require('./invoiceService');
 const { computeConvertedPlanExpiry } = require('./planService');
+const userCache = require('../utils/userCache');
+const cacheHelper = require('../utils/cacheHelper');
 const crypto = require('crypto');
 const sequelize = require('../config/db');
 const { isAnnualCycle, cycleDays, planPriceVnd } = require('../utils/planPricing');
+const { isOfflineOrMockTxError } = require('../utils/errors');
 
 /**
  * Chạy callback trong transaction nếu DB/stub sẵn sàng; fallback an toàn khi unit test không stub DB.
@@ -81,6 +86,14 @@ exports.processWebhookPayload = async (payload) => {
     const { content, description, transferAmount } = payload || {};
     const transferContent = (content || description || '').trim();
     const amount = parseFloat(transferAmount || 0);
+
+    const isZeroPlanAttempt = amount === 0 && /\bPLAN\s+\d+\s+/i.test(transferContent);
+    if (!Number.isFinite(amount) || amount < 0 || (amount === 0 && !isZeroPlanAttempt)) {
+        return {
+            success: false,
+            message: 'Số tiền giao dịch không hợp lệ (phải lớn hơn 0)'
+        };
+    }
 
     let event = null;
     if (transferContent) {
@@ -284,6 +297,8 @@ const processPayload = async (payload, transferContent, amount) => {
         landlord.planExpiresAt = activated.planExpiresAt;
         landlord.billingCycle = activated.billingCycle;
         landlord.planSource = activated.planSource;
+        await userCache.del(landlord.id);
+        await cacheHelper.del('cache:stats:admin:system');
 
         await writeAdminLog({
             action: 'UPDATE_PLAN',
@@ -312,6 +327,14 @@ const processPayload = async (payload, transferContent, amount) => {
     const invoiceMatch = transferContent.match(/HD\s+(\d+)(?:\s+LL\s+(\d+))?/i);
     if (invoiceMatch) {
         const invoiceId = parseInt(invoiceMatch[1], 10);
+        if (amount <= 0) {
+            return {
+                success: false,
+                type: 'INVOICE_INVALID_AMOUNT',
+                invoiceId,
+                message: 'Số tiền thanh toán hóa đơn phải lớn hơn 0'
+            };
+        }
         const landlordIdFromContent = invoiceMatch[2] ? parseInt(invoiceMatch[2], 10) : null;
 
         return withTransaction(async (t) => {
@@ -481,6 +504,192 @@ const processPayload = async (payload, transferContent, amount) => {
                 landlordId,
                 overpaidAmount: amount > remainingAmount ? (amount - remainingAmount) : 0,
                 message: `Tự động gạch nợ thành công cho Hóa đơn #${invoiceId}`
+            };
+        });
+    }
+
+    // ─── 3. KIỂM TRA THANH TOÁN TIỀN CỌC GIỮ PHÒNG (TRANG PUBLIC) ─────────────
+    const depositMatch = transferContent.match(/COC\s+(\d+)(?:\s+LL\s+(\d+))?/i);
+    if (depositMatch) {
+        const bookingId = parseInt(depositMatch[1], 10);
+        const landlordIdFromContent = depositMatch[2] ? parseInt(depositMatch[2], 10) : null;
+        if (amount <= 0) {
+            return {
+                success: false,
+                type: 'DEPOSIT_INVALID_AMOUNT',
+                message: 'Số tiền đặt cọc phải lớn hơn 0'
+            };
+        }
+
+        return withTransaction(async (t) => {
+            const txOpt = t ? { transaction: t } : {};
+            const booking = await RoomBooking.findByPk(bookingId, {
+                include: [{ model: Room, as: 'room', include: [{ model: Building, as: 'building' }] }],
+                ...(t ? { lock: t.LOCK?.UPDATE || true, transaction: t } : {}),
+            });
+
+            if (!booking) {
+                const msg = `Không tìm thấy yêu cầu đặt cọc ID ${bookingId}`;
+                await writeAdminLog({
+                    action: 'UNKNOWN_BOOKING_DEPOSIT',
+                    targetUserId: landlordIdFromContent || null,
+                    description: `[SePay] ${msg}. Số tiền: ${amount.toLocaleString('vi-VN')} VNĐ, Nội dung: "${transferContent}", Mã GD: ${txRef}`,
+                });
+                return { success: false, type: 'UNKNOWN_BOOKING_DEPOSIT', message: msg };
+            }
+
+            const landlordId = booking.landlordId || booking.room?.building?.landlordId;
+            if (landlordIdFromContent && landlordId && landlordIdFromContent !== landlordId) {
+                const msg = `Mã chủ nhà trong nội dung không khớp Đặt cọc #${bookingId}`;
+                await writeAdminLog({
+                    action: 'BOOKING_LANDLORD_MISMATCH',
+                    targetUserId: landlordId || null,
+                    description: `[SePay] ${msg}. Nội dung: "${transferContent}", Mã GD: ${txRef}`,
+                });
+                return { success: false, type: 'BOOKING_LANDLORD_MISMATCH', landlordId, message: msg };
+            }
+
+            const requiredDeposit = parseFloat(booking.depositAmount || 0);
+            if (requiredDeposit > 0 && amount < requiredDeposit) {
+                const msg = `Số tiền ${amount.toLocaleString('vi-VN')} VNĐ chưa đủ tiền cọc ${requiredDeposit.toLocaleString('vi-VN')} VNĐ cho Đặt cọc #${bookingId}`;
+                if (landlordId) {
+                    await notificationService.createNotification(
+                        landlordId,
+                        'Khách chuyển thiếu tiền cọc giữ phòng',
+                        `${msg}. Nội dung: "${transferContent}".`,
+                        'room_booking',
+                        booking.id
+                    );
+                }
+                return { success: false, type: 'BOOKING_DEPOSIT_UNDERPAID', landlordId, message: msg };
+            }
+
+            if (booking.paymentStatus === 'paid') {
+                return {
+                    success: true,
+                    duplicated: true,
+                    type: 'ROOM_BOOKING_DEPOSIT',
+                    landlordId,
+                    message: `Đặt cọc #${bookingId} đã được xác nhận từ trước`
+                };
+            }
+
+            const room = booking.room || await Room.findByPk(booking.roomId, {
+                ...(t ? { lock: t.LOCK?.UPDATE || true, transaction: t } : {})
+            });
+            const roomNumber = room?.roomNumber || String(booking.roomId);
+
+            // Xử lý tranh chấp cọc (Race Condition): phòng đã bị giữ chỗ hoặc cho thuê bởi đơn khác
+            if (room && room.status !== 'empty') {
+                booking.paymentStatus = 'paid';
+                booking.status = 'deposit_conflict';
+                booking.paidAt = new Date();
+                booking.transactionReference = txRef;
+                await booking.save(txOpt);
+
+                try {
+                    const sseService = require('./sseService');
+                    if (landlordId) sseService.sendToUser(landlordId, 'booking_deposit_conflict', { bookingId: booking.id, roomId: booking.roomId, roomNumber, amount });
+                    if (booking.tenantId) sseService.sendToUser(booking.tenantId, 'booking_deposit_conflict', { bookingId: booking.id, roomId: booking.roomId, roomNumber, amount });
+                } catch {}
+
+                await writeAdminLog({
+                    action: 'BOOKING_DEPOSIT_CONFLICT',
+                    targetUserId: landlordId || null,
+                    description: `[SePay Deposit Conflict] Đặt cọc #${booking.id} phòng ${roomNumber} nhận ${amount.toLocaleString('vi-VN')} VNĐ nhưng phòng đang ở trạng thái ${room.status} (Mã GD: ${txRef}).`
+                });
+
+                if (landlordId) {
+                    await notificationService.createNotification(
+                        landlordId,
+                        'Cảnh báo trùng cọc giữ phòng',
+                        `Khách ${booking.guestName} (${booking.guestPhone}) vừa chuyển cọc ${amount.toLocaleString('vi-VN')}đ cho Phòng ${roomNumber}, nhưng phòng này đã được giữ chỗ/cho thuê trước đó. Vui lòng kiểm tra hoàn cọc cho khách.`,
+                        'room_booking',
+                        booking.id
+                    );
+                }
+                if (booking.tenantId) {
+                    await notificationService.createNotification(
+                        booking.tenantId,
+                        'Phòng đã có người giữ trước — Chờ hoàn cọc',
+                        `Tiền cọc ${amount.toLocaleString('vi-VN')}đ cho Phòng ${roomNumber} đã được ghi nhận, tuy nhiên phòng vừa có người đặt giữ trước đó. Chủ nhà sẽ liên hệ hoàn cọc hoặc hỗ trợ đổi phòng.`,
+                        'room_booking',
+                        booking.id
+                    );
+                }
+
+                return {
+                    success: false,
+                    conflict: true,
+                    type: 'BOOKING_DEPOSIT_CONFLICT',
+                    bookingId: booking.id,
+                    landlordId,
+                    message: `Phòng ${roomNumber} đã có người giữ trước khi tiền cọc #${booking.id} về tài khoản. Đã đánh dấu tranh chấp để chủ trọ hoàn cọc.`
+                };
+            }
+
+            booking.paymentStatus = 'paid';
+            booking.status = 'deposit_paid';
+            booking.paidAt = new Date();
+            booking.transactionReference = txRef;
+            await booking.save(txOpt);
+
+            if (room && room.status === 'empty') {
+                room.status = 'reserved';
+                await room.save(txOpt);
+            }
+
+            try {
+                await DepositRecord.create({
+                    contractId: booking.contractId || null,
+                    bookingId: booking.id,
+                    amount: requiredDeposit > 0 ? requiredDeposit : amount,
+                    status: 'held',
+                    note: `Tiền cọc giữ phòng qua SePay (${txRef || `Booking #${booking.id}`})`
+                }, txOpt);
+            } catch (depErr) {
+                if (!isOfflineOrMockTxError(depErr, t)) {
+                    throw depErr;
+                }
+            }
+
+            try {
+                const sseService = require('./sseService');
+                if (landlordId) sseService.sendToUser(landlordId, 'booking_deposit_paid', { bookingId: booking.id, roomId: booking.roomId, roomNumber, amount });
+                if (booking.tenantId) sseService.sendToUser(booking.tenantId, 'booking_deposit_paid', { bookingId: booking.id, roomId: booking.roomId, roomNumber, amount });
+            } catch (e) {}
+
+            await writeAdminLog({
+                action: 'BOOKING_DEPOSIT_PAID',
+                targetUserId: landlordId || null,
+                description: `[SePay Auto Deposit] Đặt cọc #${booking.id} phòng ${roomNumber} đã thanh toán đủ ${amount.toLocaleString('vi-VN')} VNĐ (Mã GD: ${txRef}).`
+            });
+
+            if (landlordId) {
+                await notificationService.createNotification(
+                    landlordId,
+                    'Đã nhận tiền cọc giữ phòng (SePay)',
+                    `Khách ${booking.guestName} (${booking.guestPhone}) đã thanh toán cọc ${amount.toLocaleString('vi-VN')}đ cho Phòng ${roomNumber}. Phòng đã tự động khóa sang trạng thái Chờ ký HĐ.`,
+                    'room_booking',
+                    booking.id
+                );
+            }
+            if (booking.tenantId) {
+                await notificationService.createNotification(
+                    booking.tenantId,
+                    'Đặt cọc giữ phòng thành công!',
+                    `Hệ thống đã nhận tiền cọc ${amount.toLocaleString('vi-VN')}đ cho Phòng ${roomNumber}. Vui lòng chờ chủ nhà lập hợp đồng để ký xác nhận.`,
+                    'room_booking',
+                    booking.id
+                );
+            }
+
+            return {
+                success: true,
+                type: 'ROOM_BOOKING_DEPOSIT',
+                bookingId: booking.id,
+                landlordId,
+                message: `Xác nhận đặt cọc #${booking.id} (Phòng ${roomNumber}) thành công`
             };
         });
     }

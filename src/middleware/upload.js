@@ -13,8 +13,10 @@ if (!fs.existsSync('./uploads/support')) fs.mkdirSync('./uploads/support', { rec
 // Ảnh CCCD lưu kèm hợp đồng / tạm trú ở uploads/cccd/, cũng không public:
 // chỉ tải qua API hợp đồng sau khi kiểm quyền chủ nhà.
 if (!fs.existsSync('./uploads/cccd')) fs.mkdirSync('./uploads/cccd', { recursive: true });
+// Ảnh phòng trọ công khai: lưu tại uploads/rooms/, phục vụ qua /api/public/room-images/:filename (tối đa 5 ảnh/phòng)
+if (!fs.existsSync('./uploads/rooms')) fs.mkdirSync('./uploads/rooms', { recursive: true });
 
-const makeUpload = (dir) => multer({
+const makeUpload = (dir, maxFiles = 2) => multer({
     storage: multer.diskStorage({
         destination: (req, file, cb) => cb(null, dir),
         // Tên ngẫu nhiên thay vì Date.now(): hai ảnh upload trong cùng một mili-giây
@@ -26,7 +28,7 @@ const makeUpload = (dir) => multer({
     }),
     limits: {
         fileSize: 5 * 1024 * 1024,
-        files: 2 // CCCD tối đa 2 mặt (trước + sau), ảnh sự cố tối đa 2 ảnh
+        files: maxFiles
     },
     fileFilter: (req, file, cb) => {
         if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
@@ -39,5 +41,6 @@ const makeUpload = (dir) => multer({
 const upload = makeUpload('uploads/');
 upload.support = makeUpload('uploads/support/');
 upload.cccd = makeUpload('uploads/cccd/');
+upload.rooms = makeUpload('uploads/rooms/', 5);
 
 module.exports = upload;

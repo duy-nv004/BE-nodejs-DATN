@@ -12,12 +12,15 @@ const appealLimiter = rateLimit({
 });
 const {
   registerLandlord,
+  registerTenant,
   login,
   refreshToken,
   logout,
   createTenant,
   updateProfile,
   changePassword,
+  forgotPassword,
+  resetPassword,
   getPlans,
   upgradeRequest,
   cancelUpgradeRequest,
@@ -27,10 +30,21 @@ const {
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
+const resetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Bạn thao tác đặt lại mật khẩu quá nhiều lần, vui lòng thử lại sau 15 phút.' }
+});
+
 router.post('/register', registerLandlord);
+router.post('/register-tenant', registerTenant);
 router.post('/login', login);
 router.post('/refresh-token', refreshToken);
 router.post('/logout', logout);
+router.post('/forgot-password', resetLimiter, forgotPassword);
+router.post('/reset-password', resetLimiter, resetPassword);
 router.post('/appeal', appealLimiter, createAppeal);
 router.post('/create-tenant', protect, authorize('landlord'), createTenant);
 

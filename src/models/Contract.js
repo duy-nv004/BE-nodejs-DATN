@@ -2,6 +2,7 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/db');
 const User = require('./User');
 const Room = require('./Room');
+const { piiField } = require('../utils/crypto');
 
 const Contract = sequelize.define('Contract', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
@@ -24,7 +25,7 @@ const Contract = sequelize.define('Contract', {
     // Thông tin Bên A (Chủ nhà)
     landlordName: { type: DataTypes.STRING, allowNull: true },
     landlordPhone: { type: DataTypes.STRING, allowNull: true },
-    landlordCccd: { type: DataTypes.STRING, allowNull: true },
+    landlordCccd: { type: DataTypes.STRING, allowNull: true, ...piiField('landlordCccd') },
     landlordDob: { type: DataTypes.STRING, allowNull: true },
     landlordHometown: { type: DataTypes.TEXT, allowNull: true },
     landlordAddress: { type: DataTypes.TEXT, allowNull: true },
@@ -34,7 +35,7 @@ const Contract = sequelize.define('Contract', {
     landlordSignedAt: { type: DataTypes.DATE, allowNull: true },
     
     // Thông tin Bên B (Người thuê)
-    tenantCccd: { type: DataTypes.STRING, allowNull: true },
+    tenantCccd: { type: DataTypes.STRING, allowNull: true, ...piiField('tenantCccd') },
     tenantDob: { type: DataTypes.STRING, allowNull: true },
     tenantHometown: { type: DataTypes.TEXT, allowNull: true },
     tenantPhone: { type: DataTypes.STRING, allowNull: true },

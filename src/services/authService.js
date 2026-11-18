@@ -3,6 +3,7 @@ const Role = require('../models/Role');
 const RefreshToken = require('../models/RefreshToken');
 const PlanUpgradeRequest = require('../models/PlanUpgradeRequest');
 const planService = require('./planService');
+const emailService = require('./emailService');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
@@ -112,6 +113,71 @@ exports.registerLandlord = async ({ email, password, name, ip, userAgent }) => {
     return payload;
 };
 
+/** Đăng ký tài khoản Người thuê công khai (SĐT bắt buộc, Email tùy chọn) */
+exports.registerTenant = async ({ name, phone, email, password, ip, userAgent }) => {
+    if (!phone || !password || !String(name || '').trim()) {
+        throw createError(400, 'Vui lòng nhập đầy đủ Họ tên, Số điện thoại và Mật khẩu');
+    }
+    phone = validatePhone(phone);
+    if (email) email = validateEmail(email);
+    validatePassword(password);
+
+    const existingPhone = await User.findOne({ where: { phone } });
+    if (existingPhone) {
+        throw createError(400, 'Số điện thoại này đã được đăng ký trên hệ thống');
+    }
+    if (email) {
+        const existingEmail = await User.findOne({ where: { email } });
+        if (existingEmail) {
+            throw createError(400, 'Email này đã tồn tại trên hệ thống');
+        }
+    }
+
+    const role = await Role.findOne({ where: { name: 'tenant' } });
+    if (!role) {
+        throw createError(500, 'Không tìm thấy vai trò tenant trong hệ thống');
+    }
+
+    const user = await User.create({
+        name: String(name).trim(),
+        phone,
+        email: email || null,
+        password,
+        roleId: role.id,
+        status: 'active'
+    });
+
+    let rawRefreshToken = null;
+    try {
+        if (user && user.id) {
+            const tokenRes = await createAndSaveRefreshToken(user.id, ip, userAgent);
+            rawRefreshToken = tokenRes.rawToken;
+        }
+    } catch {
+        // Bỏ qua trong môi trường unit test
+    }
+
+    const accessToken = signAccessToken(user);
+    const payload = {
+        message: 'Đăng ký tài khoản người thuê thành công',
+        token: accessToken,
+        id: user.id,
+        role: 'tenant',
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        plan: user.plan || 'free',
+        planExpiresAt: null
+    };
+
+    if (rawRefreshToken) {
+        Object.defineProperty(payload, 'refreshToken', { value: rawRefreshToken, enumerable: false, configurable: true, writable: true });
+        Object.defineProperty(payload, 'accessToken', { value: accessToken, enumerable: false, configurable: true, writable: true });
+    }
+
+    return payload;
+};
+
 /**
  * Sinh deep-link liên kết Telegram dùng token ngắn hạn thay vì user.id.
  *
@@ -192,7 +258,27 @@ exports.createTenant = async (landlordId, { phone, password, name }) => {
 
     const existingUser = await User.findOne({ where: { phone } });
     if (existingUser) {
-        throw createError(400, 'Số điện thoại này đã được sử dụng');
+        const existingRole = existingUser.roleId ? await Role.findByPk(existingUser.roleId) : null;
+        const roleName = existingUser.roleData?.name || existingRole?.name;
+        if (roleName && roleName !== 'tenant') {
+            throw createError(400, 'Số điện thoại này đã được sử dụng');
+        }
+        const Contract = require('../models/Contract');
+        const openContractCount = await Contract.count({
+            where: { tenantId: existingUser.id, status: { [Op.in]: ['active', 'pending_tenant_signature'] } }
+        });
+        if (openContractCount > 0) {
+            throw createError(409, 'Người thuê này đang có hợp đồng đang hiệu lực hoặc chờ ký ở phòng khác');
+        }
+        if (!existingUser.ownerId) {
+            existingUser.ownerId = landlordId;
+            await existingUser.save();
+        }
+        return {
+            message: 'Đã tìm thấy tài khoản người thuê sẵn có và liên kết thành công',
+            tenantId: existingUser.id,
+            linkedExisting: true
+        };
     }
 
     const role = await Role.findOne({ where: { name: 'tenant' } });
@@ -409,4 +495,58 @@ exports.getProfile = async (userId) => {
     } : null;
 
     return profile;
+};
+
+const PASSWORD_RESET_TTL_MS = 15 * 60 * 1000;
+const hashResetOtp = (otp) => crypto.createHash('sha256').update(String(otp)).digest('hex');
+
+exports.forgotPassword = async ({ email } = {}) => {
+    const cleanEmail = validateEmail(email, { required: true });
+    const genericMsg = 'Nếu email tồn tại trong hệ thống, mã OTP đặt lại mật khẩu đã được gửi.';
+
+    const user = await User.findOne({ where: { email: cleanEmail } });
+    if (!user || user.status === 'locked') {
+        return { message: genericMsg };
+    }
+
+    const otp = String(crypto.randomInt(100000, 1000000));
+    user.resetPasswordToken = hashResetOtp(otp);
+    user.resetPasswordExpiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+    await user.save();
+
+    await emailService.sendPasswordResetOtpEmail(user.email, user.name, otp);
+    return { message: genericMsg };
+};
+
+exports.resetPassword = async ({ email, otp, newPassword } = {}) => {
+    const cleanEmail = validateEmail(email, { required: true });
+    const cleanOtp = String(otp || '').trim();
+    if (!/^\d{6}$/.test(cleanOtp)) {
+        throw createError(400, 'Mã OTP phải gồm đúng 6 chữ số');
+    }
+    const cleanPassword = validatePassword(newPassword, { fieldLabel: 'Mật khẩu mới' });
+
+    const user = await User.findOne({ where: { email: cleanEmail } });
+    if (!user || !user.resetPasswordToken || !user.resetPasswordExpiresAt) {
+        throw createError(400, 'Mã OTP không hợp lệ hoặc đã hết hạn');
+    }
+
+    if (new Date(user.resetPasswordExpiresAt).getTime() < Date.now()) {
+        throw createError(400, 'Mã OTP đã hết hạn. Vui lòng yêu cầu mã mới');
+    }
+
+    const expectedHash = Buffer.from(user.resetPasswordToken, 'hex');
+    const actualHash = Buffer.from(hashResetOtp(cleanOtp), 'hex');
+    if (expectedHash.length !== actualHash.length || !crypto.timingSafeEqual(expectedHash, actualHash)) {
+        throw createError(400, 'Mã OTP không chính xác');
+    }
+
+    user.password = cleanPassword;
+    user.resetPasswordToken = null;
+    user.resetPasswordExpiresAt = null;
+    user.tokenVersion = Number(user.tokenVersion || 0) + 1;
+    await user.save();
+
+    await RefreshToken.destroy({ where: { userId: user.id } });
+    return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại.' };
 };

@@ -8,6 +8,7 @@ router.use(protect, authorize('landlord'));
 
 router.get('/', invoiceController.listInvoices);
 router.post('/generate', invoiceController.generateInvoice);
+router.post('/generate-bulk', invoiceController.generateBulkInvoices);
 router.delete('/:id', invoiceController.deleteInvoice);
 router.post('/:id/payment', invoiceController.updatePaymentStatus);
 router.get('/status', invoiceController.getRevenueStats);

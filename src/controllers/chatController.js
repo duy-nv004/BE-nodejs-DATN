@@ -1,5 +1,6 @@
 const chatService = require('../services/chatService');
 const chatTools = require('../services/chatTools');
+const { assertChatLimit, consumeChatLimit } = require('../middleware/checkLimit');
 
 // Bộ nhớ chống thực thi trùng (replay) actionId trong vòng 15 phút (T2.16)
 const executedActions = new Map();
@@ -15,9 +16,15 @@ const pruneExpiredActions = (now = Date.now()) => {
 
 exports.chat = async (req, res) => {
     try {
+        if (req.user) {
+            await assertChatLimit(req.user);
+        }
         // Dữ liệu tra cứu luôn lấy theo req.user (từ JWT), không theo bất kỳ id nào client gửi
         // Chuẩn hóa: service có thể trả string thuần hoặc object {reply, pendingAction}
         const result = await chatService.chat(req.user, req.body?.messages, { toolsForUser: chatTools.toolsForUser });
+        if (req.user?.id) {
+            await consumeChatLimit(req.user.id);
+        }
         res.status(200).json(typeof result === 'string' ? { reply: result } : result);
     } catch (err) {
         if (err.statusCode) {

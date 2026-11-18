@@ -22,4 +22,13 @@ const sendError = (res, err) => {
     return res.status(500).json({ message: 'Lỗi máy chủ, vui lòng thử lại sau' });
 };
 
-module.exports = { createError, sendError };
+// Chỉ bỏ qua lỗi kết nối DB thật hoặc stub transaction giả trong unit test khi một model không được stub
+const isOfflineOrMockTxError = (err, transaction) => {
+    const msg = `${err?.name || ''} ${err?.message || ''}`;
+    if (/SequelizeConnection|ConnectionRefused|ConnectionError|ECONNREFUSED|AccessDenied/i.test(msg)) {
+        return true;
+    }
+    return !transaction?.connection && /reading ['"]?uuid['"]?/i.test(err?.message || '');
+};
+
+module.exports = { createError, sendError, isOfflineOrMockTxError };

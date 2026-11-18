@@ -1,20 +1,26 @@
 const { DataTypes: DT } = require('sequelize');
 
-/**
- * Đảm bảo unique index tồn tại mà không ném lỗi nếu index đã có trước đó.
- */
-const ensureUniqueIndex = async (queryInterface, table, name, fields) => {
+const ensureIndexWithOptions = async (queryInterface, table, name, fields, { unique = false } = {}) => {
   try {
     const indexes = await queryInterface.showIndex(table);
     const exists = indexes.some(idx => idx.name === name);
     if (!exists) {
-      await queryInterface.addIndex(table, fields, { unique: true, name });
-      console.log(`🔒 Đã thêm unique index ${name} trên bảng ${table}`);
+      await queryInterface.addIndex(table, fields, { unique, name });
+      console.log(`${unique ? '🔒 Đã thêm unique index' : '📇 Đã thêm index'} ${name} trên bảng ${table}`);
     }
   } catch (err) {
-    console.warn(`⚠️ Không thể thêm unique index ${name} trên ${table}:`, err.message);
+    console.warn(`⚠️ Không thể thêm index ${name} trên ${table}:`, err.message);
   }
 };
+
+/**
+ * Đảm bảo unique index tồn tại mà không ném lỗi nếu index đã có trước đó.
+ */
+const ensureUniqueIndex = (queryInterface, table, name, fields) =>
+  ensureIndexWithOptions(queryInterface, table, name, fields, { unique: true });
+
+const ensureIndex = (queryInterface, table, name, fields) =>
+  ensureIndexWithOptions(queryInterface, table, name, fields, { unique: false });
 
 /**
  * Đồng bộ hóa các cột mở rộng và unique index khi khởi động hệ thống.
@@ -29,6 +35,8 @@ const runBootstrapMigrations = async (sequelize) => {
     status: { type: DT.STRING, defaultValue: 'active' },
     aiUseCountThisMonth: { type: DT.INTEGER, defaultValue: 0 },
     lastAiUseMonth: { type: DT.STRING, allowNull: true },
+    chatUseCountThisMonth: { type: DT.INTEGER, defaultValue: 0 },
+    lastChatUseMonth: { type: DT.STRING, allowNull: true },
     cccd: { type: DT.STRING, allowNull: true },
     dob: { type: DT.STRING, allowNull: true },
     hometown: { type: DT.TEXT, allowNull: true },
@@ -39,6 +47,8 @@ const runBootstrapMigrations = async (sequelize) => {
     telegramLinkTokenExpiresAt: { type: DT.DATE, allowNull: true },
     lockReason: { type: DT.STRING(500), allowNull: true },
     tokenVersion: { type: DT.INTEGER, allowNull: false, defaultValue: 0 },
+    resetPasswordToken: { type: DT.STRING, allowNull: true },
+    resetPasswordExpiresAt: { type: DT.DATE, allowNull: true },
   };
   for (const [col, def] of Object.entries(userCols)) {
     if (!tableDefinition[col]) {
@@ -209,13 +219,39 @@ const runBootstrapMigrations = async (sequelize) => {
     }
   }
 
-  // 8. Đồng bộ thêm cột capacity và area cho bảng Rooms
-  const roomsTableDefinition = await queryInterface.describeTable('Rooms');
-  if (!roomsTableDefinition.capacity) {
-    await queryInterface.addColumn('Rooms', 'capacity', { type: DT.INTEGER, defaultValue: 2, allowNull: true });
+  // 8. Đồng bộ thêm cột cho bảng Rooms và Buildings
+  const buildingsTableDefinition = await queryInterface.describeTable('Buildings');
+  for (const [col, def] of Object.entries({
+    city: { type: DT.STRING, allowNull: true },
+    district: { type: DT.STRING, allowNull: true },
+    ward: { type: DT.STRING, allowNull: true },
+    latitude: { type: DT.DOUBLE, allowNull: true },
+    longitude: { type: DT.DOUBLE, allowNull: true },
+  })) {
+    if (!buildingsTableDefinition[col]) {
+      await queryInterface.addColumn('Buildings', col, def);
+    }
   }
-  if (!roomsTableDefinition.area) {
-    await queryInterface.addColumn('Rooms', 'area', { type: DT.DECIMAL(10, 2), defaultValue: 20, allowNull: true });
+
+  const roomsTableDefinition = await queryInterface.describeTable('Rooms');
+  for (const [col, def] of Object.entries({
+    capacity: { type: DT.INTEGER, defaultValue: 2, allowNull: true },
+    area: { type: DT.DECIMAL(10, 2), defaultValue: 20, allowNull: true },
+    images: { type: DT.TEXT, allowNull: true },
+    amenities: { type: DT.TEXT, allowNull: true },
+    description: { type: DT.TEXT, allowNull: true },
+    depositAmount: { type: DT.DECIMAL(12, 2), defaultValue: 0, allowNull: true },
+  })) {
+    if (!roomsTableDefinition[col]) {
+      await queryInterface.addColumn('Rooms', col, def);
+    }
+  }
+
+  // 9. Đồng bộ cột maxChatCallsPerMonth cho bảng Plans
+  const plansTableDefinition = await queryInterface.describeTable('Plans');
+  if (!plansTableDefinition.maxChatCallsPerMonth) {
+    await queryInterface.addColumn('Plans', 'maxChatCallsPerMonth', { type: DT.INTEGER, defaultValue: 20, allowNull: true });
+    console.log("📁 Thêm cột maxChatCallsPerMonth vào bảng Plans thành công!");
   }
 
   // 9. Đồng bộ các Unique Index cho DB cũ (T1.1, T2.1, T2.13)
@@ -224,10 +260,42 @@ const runBootstrapMigrations = async (sequelize) => {
   await ensureUniqueIndex(queryInterface, 'Rooms', 'rooms_building_roomnumber_unique', ['buildingId', 'roomNumber']);
   await ensureUniqueIndex(queryInterface, 'Services', 'services_building_unique', ['buildingId']);
   await ensureUniqueIndex(queryInterface, 'Users', 'users_telegram_chat_id_unique', ['telegramChatId']);
+
+  // 10. Đồng bộ cột RoomBookings (lookupToken, holdExpiresAt, status deposit_conflict) & DepositRecords (bookingId)
+  try {
+    const rbTable = await queryInterface.describeTable('RoomBookings');
+    if (!rbTable.lookupToken) {
+      await queryInterface.addColumn('RoomBookings', 'lookupToken', { type: DT.STRING(64), allowNull: true });
+    }
+    if (!rbTable.holdExpiresAt) {
+      await queryInterface.addColumn('RoomBookings', 'holdExpiresAt', { type: DT.DATE, allowNull: true });
+    }
+    await sequelize.query(
+      "ALTER TABLE RoomBookings MODIFY COLUMN status ENUM('pending','confirmed','deposit_paid','contract_created','cancelled','rejected','deposit_conflict') NOT NULL DEFAULT 'pending'"
+    ).catch(() => {});
+  } catch {
+    // Bỏ qua nếu bảng chưa được sync lần đầu
+  }
+
+  try {
+    const drTable = await queryInterface.describeTable('DepositRecords');
+    if (!drTable.bookingId) {
+      await queryInterface.addColumn('DepositRecords', 'bookingId', { type: DT.INTEGER, allowNull: true });
+    }
+    await queryInterface.changeColumn('DepositRecords', 'contractId', { type: DT.INTEGER, allowNull: true }).catch(() => {});
+  } catch {
+    // Bỏ qua nếu bảng chưa tồn tại
+  }
+
+  // 11. Composite index cho truy vấn phòng công khai & lọc hóa đơn theo chủ trọ + kỳ
+  await ensureIndex(queryInterface, 'Rooms', 'rooms_status_price_area_idx', ['status', 'price', 'area']);
+  await ensureIndex(queryInterface, 'Buildings', 'buildings_city_district_idx', ['city', 'district']);
+  await ensureIndex(queryInterface, 'Invoices', 'invoices_landlord_year_month_status_idx', ['landlordId', 'year', 'month', 'isPaid']);
 };
 
 module.exports = {
   ensureUniqueIndex,
+  ensureIndex,
   runBootstrapMigrations,
 };
 

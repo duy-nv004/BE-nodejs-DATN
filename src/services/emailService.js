@@ -102,3 +102,41 @@ exports.sendTicketRejectedEmail = async (toEmail, reason) => {
         return false;
     }
 };
+
+/**
+ * Gửi mã OTP 6 số để đặt lại mật khẩu.
+ * @param {string} toEmail
+ * @param {string} name
+ * @param {string} otp
+ * @returns {Promise<boolean>}
+ */
+exports.sendPasswordResetOtpEmail = async (toEmail, name, otp) => {
+    const displayName = escapeHtml(name || toEmail);
+    const mailOptions = {
+        from: `"HomeSync Support" <${process.env.EMAIL_USER}>`,
+        to: toEmail,
+        subject: 'Mã xác nhận đặt lại mật khẩu - HomeSync',
+        html: `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; padding: 24px; color: #1a202c;">
+        <h2 style="color: #0f172a; margin-top: 0; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px;">
+            Yêu cầu đặt lại mật khẩu
+        </h2>
+        <p>Xin chào <b>${displayName}</b>,</p>
+        <p>Bạn vừa yêu cầu đặt lại mật khẩu cho tài khoản <b>HomeSync</b>. Mã OTP xác nhận của bạn là:</p>
+        <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; padding: 16px; border-radius: 8px; font-size: 28px; font-weight: bold; text-align: center; letter-spacing: 6px; color: #0f766e; margin: 24px 0;">
+            ${escapeHtml(otp)}
+        </div>
+        <p style="color: #64748b; font-size: 13px;">
+            Mã có hiệu lực trong <b>15 phút</b>. Nếu bạn không yêu cầu thao tác này, vui lòng bỏ qua email này.
+        </p>
+    </div>`,
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        return true;
+    } catch (error) {
+        console.error(`❌ [emailService] Lỗi khi gửi OTP đặt lại mật khẩu tới ${toEmail}:`, error.message);
+        return false;
+    }
+};

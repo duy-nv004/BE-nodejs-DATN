@@ -1,6 +1,13 @@
+const fs = require('fs');
 const buildingService = require('../services/buildingService');
 const supportService = require('../services/supportService');
 const { sendError } = require('../utils/errors');
+
+const cleanupUploadedFiles = (files) => {
+    for (const f of files || []) {
+        if (f?.path) fs.unlink(f.path, () => {});
+    }
+};
 
 // 1. TẠO TÒA NHÀ
 exports.createBuilding = async (req, res) => {
@@ -12,12 +19,29 @@ exports.createBuilding = async (req, res) => {
     }
 };
 
-// 2. TẠO PHÒNG
+// 1b. CẬP NHẬT TÒA NHÀ
+exports.updateBuilding = async (req, res) => {
+    try {
+        const result = await buildingService.updateBuilding(req.user.id, req.params.id, req.body);
+        res.json(result);
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
+// 2. TẠO PHÒNG (hỗ trợ multipart kèm tối đa 5 ảnh)
 exports.createRoom = async (req, res) => {
     try {
-        const result = await buildingService.createRoom(req.user.id, req.body);
+        const uploadedNames = Array.isArray(req.files) && req.files.length > 0
+            ? req.files.map((f) => f.filename)
+            : req.body?.images;
+        const result = await buildingService.createRoom(req.user.id, {
+            ...req.body,
+            images: uploadedNames
+        });
         res.status(201).json(result);
     } catch (err) {
+        cleanupUploadedFiles(req.files);
         sendError(res, err);
     }
 };
@@ -62,12 +86,19 @@ exports.getRooms = async (req, res) => {
     }
 };
 
-// 7. CẬP NHẬT PHÒNG
+// 7. CẬP NHẬT PHÒNG (hỗ trợ multipart kèm ảnh mới + existingImages)
 exports.updateRoom = async (req, res) => {
     try {
-        const result = await buildingService.updateRoom(req.user.id, req.params.id, req.body);
+        const uploadedNames = Array.isArray(req.files) && req.files.length > 0
+            ? req.files.map((f) => f.filename)
+            : req.body?.images;
+        const result = await buildingService.updateRoom(req.user.id, req.params.id, {
+            ...req.body,
+            images: uploadedNames
+        });
         res.json(result);
     } catch (err) {
+        cleanupUploadedFiles(req.files);
         sendError(res, err);
     }
 };
@@ -85,7 +116,7 @@ exports.deleteRoom = async (req, res) => {
 // 9. LẤY DANH SÁCH KHÁCH THUÊ
 exports.getTenants = async (req, res) => {
     try {
-        const result = await buildingService.getTenants(req.user.id);
+        const result = await buildingService.getTenants(req.user.id, req.query);
         res.json(result);
     } catch (err) {
         sendError(res, err);

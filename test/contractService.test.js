@@ -79,6 +79,8 @@ describe('createContract', () => {
     };
 
     test('C2: khách không thuộc chủ nhà / không phải tenant / bị khóa thì 404', async () => {
+
+
         const out = setupCreate();
         stub(User, 'findOne', async (opts) => { out.userQuery = opts; return null; });
         await assert.rejects(service.createContract(LANDLORD, newContractData, CCCD_FILES),
@@ -120,17 +122,24 @@ describe('createContract', () => {
         }
     });
 
-    test('thiếu 1 hoặc 2 mặt CCCD thì 400, lưu tên file khi đủ', async () => {
-        for (const files of [{}, { cccdFront: CCCD_FILES.cccdFront }, { cccdBack: CCCD_FILES.cccdBack }]) {
+    test('gửi thiếu 1 trong 2 mặt CCCD thì 400, bỏ trống 2 mặt hoặc gửi đủ 2 mặt đều hợp lệ', async () => {
+        for (const files of [{ cccdFront: CCCD_FILES.cccdFront }, { cccdBack: CCCD_FILES.cccdBack }]) {
             setupCreate();
             await assert.rejects(service.createContract(LANDLORD, newContractData, files),
                 (e) => e.statusCode === 400 && /CCCD/.test(e.message));
             restores.splice(0).reverse().forEach(r => r());
         }
+
+
         const out = setupCreate();
         await service.createContract(LANDLORD, newContractData, CCCD_FILES);
         assert.equal(out.created.tenantCccdFront, 'front.jpg');
         assert.equal(out.created.tenantCccdBack, 'back.jpg');
+        restores.splice(0).reverse().forEach(r => r());
+        const noCccdOut = setupCreate();
+        await service.createContract(LANDLORD, newContractData, {});
+        assert.equal(noCccdOut.created.tenantCccdFront, null);
+        assert.equal(noCccdOut.created.tenantCccdBack, null);
     });
 });
 
@@ -222,7 +231,7 @@ describe('renewContract', () => {
 describe('signContractByTenant', () => {
     const pending = () => record({
         id: 11, tenantId: TENANT, roomId: 5, status: 'pending_tenant_signature',
-        startDate: '2026-11-01', initialElectricity: 100, initialWater: 10, room: makeRoom('occupied')
+        startDate: '2026-11-01', initialElectricity: 100, initialWater: 10, tenantCccdFront: 'existing-front.jpg', tenantCccdBack: 'existing-back.jpg', room: makeRoom('occupied')
     });
 
     test('ký bản gia hạn: chốt hợp đồng cũ, chuyển cọc, không ghi lại chỉ số đầu kỳ', async () => {
@@ -895,6 +904,7 @@ describe('Đợt 1: khóa dòng khi tạo / ký / thanh lý hợp đồng', () =
             id: 11, tenantId: TENANT, roomId: 5, status: 'pending_tenant_signature',
             startDate: '2026-11-01', endDate: '2027-10-31', rentPrice: 3000000, deposit: 2000000,
             electricityPrice: 3500, waterPrice: 20000, initialElectricity: 100, initialWater: 10,
+            tenantCccdFront: 'existing-front.jpg', tenantCccdBack: 'existing-back.jpg',
             room: makeRoom('reserved')
         });
         stub(Contract, 'findOne', async ({ where }) => (where.status === 'active' ? null : first));

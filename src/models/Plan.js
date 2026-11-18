@@ -8,7 +8,8 @@ const Plan = sequelize.define('Plan', {
     annualPrice: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     maxBuildings: { type: DataTypes.INTEGER, defaultValue: 1 },
     maxRoomsPerBuilding: { type: DataTypes.INTEGER, defaultValue: 5 },
-    maxAICallsPerMonth: { type: DataTypes.INTEGER, defaultValue: 0 } // -1 means unlimited
+    maxAICallsPerMonth: { type: DataTypes.INTEGER, defaultValue: 0 }, // -1 means unlimited
+    maxChatCallsPerMonth: { type: DataTypes.INTEGER, defaultValue: 20 } // -1 means unlimited
 }, { tableName: 'Plans' });
 
 module.exports = Plan;

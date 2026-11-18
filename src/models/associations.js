@@ -96,6 +96,18 @@ const setupAssociations = () => {
     const SePayEvent = require('./SePayEvent');
     User.hasMany(SePayEvent, { foreignKey: 'landlordId', as: 'sepayEvents' });
     SePayEvent.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
+
+    // RoomBooking — lịch hẹn xem phòng & đặt cọc giữ phòng công khai
+    const RoomBooking = require('./RoomBooking');
+    Room.hasMany(RoomBooking, { foreignKey: 'roomId', as: 'bookings' });
+    RoomBooking.belongsTo(Room, { foreignKey: 'roomId', as: 'room' });
+    Building.hasMany(RoomBooking, { foreignKey: 'buildingId', as: 'bookings' });
+    RoomBooking.belongsTo(Building, { foreignKey: 'buildingId', as: 'building' });
+    User.hasMany(RoomBooking, { foreignKey: 'landlordId', as: 'receivedBookings' });
+    RoomBooking.belongsTo(User, { foreignKey: 'landlordId', as: 'landlord' });
+    User.hasMany(RoomBooking, { foreignKey: 'tenantId', as: 'myBookings' });
+    RoomBooking.belongsTo(User, { foreignKey: 'tenantId', as: 'tenant' });
+    RoomBooking.belongsTo(Contract, { foreignKey: 'contractId', as: 'contract' });
 };
 
 module.exports = setupAssociations;

@@ -1,5 +1,13 @@
 const sepayService = require('../services/sepayService');
 const { systemBank } = require('../utils/bank');
+const crypto = require('crypto');
+
+const timingSafeEqual = (a, b) => {
+    if (!a || !b) return false;
+    const bufA = Buffer.from(String(a));
+    const bufB = Buffer.from(String(b));
+    return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+};
 
 /**
  * Endpoint nhận dữ liệu Webhook từ SePay khi có biến động dư nợ / chuyển khoản ngân hàng.
@@ -22,7 +30,7 @@ exports.handleWebhook = async (req, res) => {
             // Bắt buộc phải có token: thiếu header cũng bị từ chối. Trước đây chỉ chặn khi
             // token SAI, nên request không kèm header vẫn lọt qua và có thể giả mạo webhook
             // để kích hoạt gói trả phí miễn phí.
-            if (token !== sepayApiKey) {
+            if (!timingSafeEqual(token, sepayApiKey)) {
                 console.warn(`⚠️ [SePay Webhook] Truy cập không hợp lệ - Sai hoặc thiếu SEPAY_API_KEY!`);
                 return res.status(401).json({ success: false, message: 'Xác thực SePay API Key thất bại!' });
             }

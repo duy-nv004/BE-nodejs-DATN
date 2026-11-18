@@ -12,6 +12,16 @@ exports.generateInvoice = async (req, res) => {
     }
 };
 
+exports.generateBulkInvoices = async (req, res) => {
+    try {
+        const { buildingId, month, year, roomIds } = req.body || {};
+        const result = await invoiceService.generateBulkInvoices(req.user.id, { buildingId, month, year, roomIds });
+        res.status(result.summary?.createdCount > 0 ? 201 : 200).json(result);
+    } catch (err) {
+        res.status(err.statusCode || 500).json({ message: err.message });
+    }
+};
+
 // 2. XÁC NHẬN THANH TOÁN
 exports.updatePaymentStatus = async (req, res) => {
     try {

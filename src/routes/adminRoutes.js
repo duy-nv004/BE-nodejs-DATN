@@ -24,4 +24,8 @@ router.get('/upgrade-requests', adminController.getUpgradeRequests);
 router.get('/tickets', adminController.getTickets);
 router.put('/tickets/:id/resolve', adminController.resolveTicket);
 
+// Giám sát và làm mới bộ nhớ đệm Redis
+router.get('/cache/status', adminController.getCacheStatus);
+router.post('/cache/flush', adminController.flushCache);
+
 module.exports = router;

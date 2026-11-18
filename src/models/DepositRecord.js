@@ -6,8 +6,12 @@ const DepositRecord = sequelize.define('DepositRecord', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
     contractId: {
         type: DataTypes.INTEGER,
-        allowNull: false,
+        allowNull: true,
         references: { model: Contract, key: 'id' }
+    },
+    bookingId: {
+        type: DataTypes.INTEGER,
+        allowNull: true
     },
     amount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     status: {

@@ -33,17 +33,24 @@ exports.getSupportRequests = async (req, res) => {
     }
 };
 
-// 5. KÍ HỢP ĐỒNG (Dành cho Người thuê)
+// 5. KÍ HỢP ĐỒNG (Dành cho Người thuê — hỗ trợ kèm upload CCCD 2 mặt)
 exports.signContract = async (req, res) => {
     try {
         const { id } = req.params;
-        const { signature } = req.body;
+        const { signature, tenantCccd, tenantDob, tenantHometown } = req.body || {};
         const result = await contractService.signContractByTenant(req.user.id, id, signature, {
             ip: req.ip,
             userAgent: typeof req.get === 'function' ? req.get('user-agent') : req.headers?.['user-agent'],
+            files: req.files || {},
+            tenantCccd,
+            tenantDob,
+            tenantHometown,
         });
         res.json({ message: 'Ký hợp đồng thành công! Hợp đồng đã có hiệu lực.', contract: result });
     } catch (err) {
+        for (const f of Object.values(req.files || {}).flat()) {
+            if (f?.path) fs.unlink(f.path, () => {});
+        }
         res.status(err.statusCode || 500).json({ message: err.message });
     }
 };

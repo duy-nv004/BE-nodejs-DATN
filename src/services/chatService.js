@@ -64,7 +64,7 @@ const defaultRepo = {
         const [invoices, openRequests] = await Promise.all([
             Invoice.findAll({
                 where: { contractId: contracts.map((c) => c.id), isPaid: false },
-                attributes: ["contractId", "month", "year", "totalAmount"],
+                attributes: ["contractId", "month", "year", "totalAmount", "paidAmount"],
                 order: [["year", "DESC"], ["month", "DESC"]]
             }),
             SupportRequest.count({ where: { tenantId, status: OPEN_REQUEST_STATUSES } })
@@ -73,12 +73,18 @@ const defaultRepo = {
         const roomNumberByContract = new Map(contracts.map((c) => [c.id, c.room?.roomNumber]));
         return {
             rentals: contracts.map((c) => ({ room: c.room, building: c.room?.building, contract: c })),
-            unpaidInvoices: invoices.map((i) => ({
-                month: i.month,
-                year: i.year,
-                totalAmount: i.totalAmount,
-                roomNumber: roomNumberByContract.get(i.contractId)
-            })),
+            unpaidInvoices: invoices.map((i) => {
+                const paidAmount = Number(i.paidAmount || 0);
+                const remainingAmount = Math.max(0, Number(i.totalAmount || 0) - paidAmount);
+                return {
+                    month: i.month,
+                    year: i.year,
+                    totalAmount: i.totalAmount,
+                    paidAmount,
+                    remainingAmount,
+                    roomNumber: roomNumberByContract.get(i.contractId)
+                };
+            }),
             openRequests
         };
     },
@@ -97,7 +103,7 @@ const defaultRepo = {
         const [unpaid, pendingContracts, openRequests, activeOrPendingContracts, openSupportItems] = await Promise.all([
             Invoice.findAll({
                 where: { roomId: { [Op.in]: roomIds }, isPaid: false },
-                attributes: ["id", "roomId", "month", "year", "totalAmount"],
+                attributes: ["id", "roomId", "month", "year", "totalAmount", "paidAmount"],
                 order: [["year", "DESC"], ["month", "DESC"]]
             }),
             Contract.count({ where: { roomId: { [Op.in]: roomIds }, status: "pending_tenant_signature" } }),
@@ -140,14 +146,20 @@ const defaultRepo = {
             currentRevenue,
             unpaidInvoices: {
                 count: unpaid.length,
-                total: unpaid.reduce((sum, inv) => sum + Number(inv.totalAmount || 0), 0),
-                items: unpaid.slice(0, 10).map((inv) => ({
-                    id: inv.id,
-                    roomNumber: roomNumberById.get(inv.roomId),
-                    month: inv.month,
-                    year: inv.year,
-                    totalAmount: Number(inv.totalAmount || 0)
-                }))
+                total: unpaid.reduce((sum, inv) => sum + Math.max(0, Number(inv.totalAmount || 0) - Number(inv.paidAmount || 0)), 0),
+                items: unpaid.slice(0, 10).map((inv) => {
+                    const paidAmount = Number(inv.paidAmount || 0);
+                    const remainingAmount = Math.max(0, Number(inv.totalAmount || 0) - paidAmount);
+                    return {
+                        id: inv.id,
+                        roomNumber: roomNumberById.get(inv.roomId),
+                        month: inv.month,
+                        year: inv.year,
+                        totalAmount: Number(inv.totalAmount || 0),
+                        paidAmount,
+                        remainingAmount
+                    };
+                })
             },
             pendingContracts,
             openRequests,
@@ -188,12 +200,15 @@ const defaultRepo = {
 
 const adminContext = (s) => {
     if (!s) return "Chưa có dữ liệu thống kê nền tảng.";
-    const stats = s.stats || {};
+    const stats = s.stats?.stats || s.stats || {};
+    const totalLandlords = stats.totalLandlords ?? stats.landlordCount ?? 0;
+    const totalRevenue = stats.totalRevenue || 0;
+    const mrr = stats.mrr ?? stats.estimatedMrr ?? 0;
     return [
         `Chỉ số điều hành nền tảng:`,
-        `- Tổng số chủ nhà: ${stats.totalLandlords || 0}`,
-        `- Doanh thu thực thu: ${formatVND(stats.totalRevenue || 0)}`,
-        `- Doanh thu định kỳ tháng (MRR): ${formatVND(stats.mrr || 0)}`,
+        `- Tổng số chủ nhà: ${totalLandlords}`,
+        `- Doanh thu thực thu: ${formatVND(totalRevenue)}`,
+        `- Doanh thu định kỳ tháng (MRR): ${formatVND(mrr)}`,
         `- Phiếu khiếu nại đang chờ xử lý: ${s.pendingTickets || 0} ticket`,
         `- Giao dịch SePay bị từ chối/lỗi: ${s.failedSepayCount || 0} giao dịch`
     ].join("\n");
@@ -204,7 +219,8 @@ const tenantContext = (s) => {
     const unpaid = s.unpaidInvoices.length
         ? s.unpaidInvoices.map((i) => {
             const room = i.roomNumber ? `phòng ${i.roomNumber} ` : "";
-            return `${room}tháng ${i.month}/${i.year}: ${formatVND(i.totalAmount)}`;
+            const due = i.remainingAmount ?? Math.max(0, Number(i.totalAmount || 0) - Number(i.paidAmount || 0));
+            return `${room}tháng ${i.month}/${i.year}: ${formatVND(due)}`;
         }).join("; ")
         : "không có";
     const rentalLines = s.rentals.map(({ room, building, contract }) => [
@@ -221,17 +237,23 @@ const tenantContext = (s) => {
 
 const landlordContext = (s) => {
     const buildingLines = (s.buildings || []).map((b) => {
-        const roomLines = (s.rooms?.list || [])
-            .filter((r) => r.buildingId === b.id)
-            .map((r) => `  - phòng ID ${r.id}: ${r.roomNumber} (${r.status})`)
-            .join("\n");
+        const allRooms = (s.rooms?.list || []).filter((r) => r.buildingId === b.id);
+        const cappedRooms = allRooms.slice(0, 10);
+        const moreRooms = allRooms.length > 10 ? `  ... và ${allRooms.length - 10} phòng khác` : '';
+        const roomLines = [
+            ...cappedRooms.map((r) => `  - phòng ID ${r.id}: ${r.roomNumber} (${r.status})`),
+            ...(moreRooms ? [moreRooms] : [])
+        ].join("\n");
         return `- Tòa nhà ID ${b.id}: ${b.name}\n${roomLines}`;
     }).join("\n");
 
     const invoiceItems = (s.unpaidInvoices?.items || []).slice(0, 10);
     const invoiceLines = invoiceItems.length
         ? `Danh sách hóa đơn chưa thu (tối đa 10):\n` + invoiceItems
-            .map((i) => `  - Hóa đơn ID ${i.id}: phòng ${i.roomNumber || "?"}, kỳ ${i.month}/${i.year}, số tiền ${formatVND(i.totalAmount)}`)
+            .map((i) => {
+                const due = i.remainingAmount ?? Math.max(0, Number(i.totalAmount || 0) - Number(i.paidAmount || 0));
+                return `  - Hóa đơn ID ${i.id}: phòng ${i.roomNumber || "?"}, kỳ ${i.month}/${i.year}, số tiền còn nợ ${formatVND(due)}`;
+            })
             .join("\n")
         : null;
 
@@ -382,3 +404,5 @@ exports.chat = async (user, messages, { repo = defaultRepo, ai = defaultAi, tool
     if (!reply) throw createError(502, "Trợ lý đang bận, vui lòng thử lại sau.");
     return reply;
 };
+
+exports.defaultRepo = defaultRepo;

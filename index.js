@@ -2,6 +2,7 @@ const express = require("express");
 const sequelize = require("./src/config/db");
 const setupAssociations = require("./src/models/associations");
 const fs = require("fs");
+const path = require("path");
 require("dotenv").config();
 
 // Import Model Role để khởi tạo dữ liệu
@@ -20,6 +21,8 @@ const ContractRequest = require("./src/models/ContractRequest");
 const ContractOccupant = require("./src/models/ContractOccupant");
 // Bắt buộc require để sequelize.sync() tạo bảng RefreshTokens (quản lý phiên đơn thiết bị)
 const RefreshToken = require("./src/models/RefreshToken");
+// Bắt buộc require để sequelize.sync() tạo bảng RoomBookings (đặt lịch xem & đặt cọc công khai)
+const RoomBooking = require("./src/models/RoomBooking");
 
 // Route imports
 const authRoutes = require("./src/routes/authRoutes");
@@ -35,6 +38,7 @@ const sepayRoutes = require("./src/routes/sepayRoutes");
 const chatRoutes = require("./src/routes/chatRoutes");
 const depositRoutes = require("./src/routes/depositRoutes");
 const supportRoutes = require("./src/routes/supportRoutes");
+const publicRoutes = require("./src/routes/publicRoutes");
 
 const cors = require("cors");
 const helmet = require("helmet");
@@ -47,14 +51,10 @@ const app = express();
 // thuần JSON, không phục vụ HTML — CSP ở đây không có tác dụng và dễ gây nhiễu.
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// Giới hạn CORS theo biến môi trường. Cho phép credentials (cookies) an toàn.
-const allowedOrigins = (process.env.CORS_ORIGINS || '')
-    .split(',')
-    .map(o => o.trim())
-    .filter(Boolean);
+const { corsOriginValidator } = require('./src/utils/cors');
 
 app.use(cors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    origin: corsOriginValidator,
     credentials: true
 }));
 
@@ -100,6 +100,39 @@ app.use("/api/sepay", sepayRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/deposits", depositRoutes);
 app.use("/api/support", supportRoutes);
+app.use("/api/public", publicRoutes);
+
+// Tuyến đường truy cập file có chữ ký bảo mật (Signed URLs)
+const storageService = require('./src/services/storageService');
+app.get('/api/storage/access', (req, res) => {
+    const { key, expires, sig } = req.query;
+    if (!storageService.verifySignedUrl(key, expires, sig)) {
+        return res.status(403).json({ message: 'Liên kết không hợp lệ hoặc đã hết hạn truy cập' });
+    }
+    const uploadsRoot = path.resolve(__dirname, './uploads');
+    const safePath = path.resolve(uploadsRoot, String(key || ''));
+    if (!safePath.startsWith(uploadsRoot + path.sep) || !fs.existsSync(safePath)) {
+        return res.status(404).json({ message: 'File không tồn tại' });
+    }
+    res.sendFile(safePath);
+});
+
+// 404 handler cho các endpoint API không tồn tại
+app.use("/api", (req, res) => {
+    res.status(404).json({ message: 'Tuyến đường API không tồn tại' });
+});
+
+// Global Error Handler tập trung, không lộ stack trace ra ngoài
+app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (err && err.message && err.message.includes('CORS')) {
+        return res.status(403).json({ message: err.message });
+    }
+    console.error('❌ [Unhandled Error]:', err.message || err);
+    res.status(err.statusCode || err.status || 500).json({
+        message: err.statusCode ? err.message : 'Đã có lỗi máy chủ xảy ra. Vui lòng thử lại sau.'
+    });
+});
 
 const PORT = process.env.PORT || 5000;
 
@@ -169,54 +202,9 @@ const startServer = async () => {
       console.log(`💱 Đã chuyển giá gói ${name} từ USD sang VND`);
     }
 
-    // Tự động kiểm tra và chuyển tất cả tài khoản hết hạn về Gói Miễn Phí (Free)
-    const planService = require('./src/services/planService');
-    const autoCheckExpiredPlans = async () => {
-      try {
-        const res = await planService.expireAllOverduePlans();
-        const updatedCount = typeof res === 'number' ? res : (res?.updatedCount || 0);
-        if (updatedCount > 0) {
-          console.log(`⏰ [Auto Expiration Task] Đã tự động chuyển ${updatedCount} tài khoản quá hạn về Gói Miễn Phí (Free).`);
-        }
-        if (typeof planService.expirePendingUpgradeRequests === 'function') {
-          await planService.expirePendingUpgradeRequests();
-        }
-      } catch (err) {
-        console.error("❌ Lỗi kiểm tra hết hạn gói cước tự động:", err);
-      }
-    };
-
-    await autoCheckExpiredPlans();
-    setInterval(autoCheckExpiredPlans, 3600000); // Tự động quét kiểm tra mỗi 1 giờ
-
-    // Nhắc HĐ sắp/đã hết hạn (C3) và hủy HĐ chờ ký quá 7 ngày (T2.7)
-    const contractService = require('./src/services/contractService');
-    const autoNotifyExpiringContracts = async () => {
-      try {
-        const n = await contractService.notifyExpiringContracts();
-        if (n > 0) console.log(`⏰ [Contract Expiry Task] Đã gửi nhắc hết hạn cho ${n} hợp đồng.`);
-        if (typeof contractService.expireStalePendingContracts === 'function') {
-          await contractService.expireStalePendingContracts();
-        }
-      } catch (err) {
-        console.error("❌ Lỗi nhắc hợp đồng hết hạn:", err);
-      }
-    };
-    await autoNotifyExpiringContracts();
-    setInterval(autoNotifyExpiringContracts, 86400000); // mỗi 24 giờ
-
-    // Nhắc hóa đơn quá hạn cho toàn hệ thống (I4). Chống spam 3 ngày nằm trong service.
-    const notificationService = require('./src/services/notificationService');
-    const autoRemindOverdueInvoices = async () => {
-      try {
-        const n = await notificationService.remindOverdueInvoices();
-        if (n > 0) console.log(`⏰ [Overdue Invoice Task] Đã gửi ${n} nhắc hóa đơn quá hạn.`);
-      } catch (err) {
-        console.error("❌ Lỗi nhắc hóa đơn quá hạn:", err);
-      }
-    };
-    await autoRemindOverdueInvoices();
-    setInterval(autoRemindOverdueInvoices, 3600000); // mỗi 1 giờ
+    // Khởi động hệ thống tác vụ định kỳ (Cron Worker) với Distributed Lock chống trùng lặp đa pod
+    const cronWorker = require('./src/jobs/cronWorker');
+    cronWorker.startCronJobs();
 
     app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
   } catch (error) {
